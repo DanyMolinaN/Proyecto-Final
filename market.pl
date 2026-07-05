@@ -66,6 +66,13 @@ my $canvas = $mw->Canvas(
 # nunca compita con el zoom personalizado del ChartEngine en X11/Linux.
 $canvas->bind('Canvas', '<Button-4>', '');
 $canvas->bind('Canvas', '<Button-5>', '');
+$canvas->bind('Canvas', '<Control-Button-4>', '');
+$canvas->bind('Canvas', '<Control-Button-5>', '');
+eval {
+    my @tags = $canvas->bindtags;
+    my @filtered = grep { defined $_ && $_ ne 'Canvas' } @tags;
+    $canvas->bindtags(\@filtered) if @filtered != @tags;
+};
 
 #==================
 # MARKET DATA

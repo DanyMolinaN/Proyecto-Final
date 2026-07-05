@@ -7,6 +7,13 @@ package Market::ChartEngine;
 use strict;
 use warnings;
 
+use Time::HiRes qw(time);
+
+# Activa el logging de diagnostico del wheel/zoom si la variable de entorno
+# CHART_DEBUG_WHEEL=1 esta definida al arrancar market.pl. No afecta nada si
+# no esta activada.
+our $DEBUG_WHEEL = $ENV{CHART_DEBUG_WHEEL} ? 1 : 0;
+
 use Market::Panels::PricePanel;
 use Market::Panels::ATRPanel;
 use Market::Panels::Scales;
@@ -157,6 +164,9 @@ sub new {
         _zoom_frame          => 0,
         _zoom_hud_after      => undef,
         _replay_after        => undef,
+        wheel_event_counter  => 0,
+        wheel_last_ts        => undef,
+        wheel_last_event     => undef,
     };
 
     bless $self, $class;
@@ -210,9 +220,184 @@ sub _sync_infra_state {
 
 # ── Eventos ───────────────────────────────────────────────────────────────────
 
+sub _wheel_debug_enabled {
+    my ($self) = @_;
+    return 1 if $Market::ChartEngine::DEBUG_WHEEL;
+    return 0 unless defined $ENV{MARKET_WHEEL_DEBUG};
+    return $ENV{MARKET_WHEEL_DEBUG} =~ /^(1|true|yes|on)$/i ? 1 : 0;
+}
+
+sub _wheel_debug_path {
+    my ($self) = @_;
+    my $path = $ENV{MARKET_WHEEL_LOG};
+    return defined $path && $path ne '' ? $path : undef;
+}
+
+sub _wheel_debug_log {
+    my ($self, $message) = @_;
+    return unless $self && $self->_wheel_debug_enabled();
+    return unless defined $message && $message ne '';
+
+    my $path = $self->_wheel_debug_path();
+    if (defined $path) {
+        open my $fh, '>>', $path or do {
+            print STDERR "[wheel-debug] unable to open $path: $!\n";
+            return;
+        };
+        print {$fh} $message;
+        close $fh;
+    }
+    else {
+        print STDERR $message;
+    }
+}
+
+sub _wheel_debug_value {
+    my ($self, $value) = @_;
+    return defined $value ? $value : 'undef';
+}
+
+# _dbg_wheel($tag, %kv)
+# Log de diagnostico a STDERR o MARKET_WHEEL_LOG. Cada linea trae timestamp de
+# alta resolucion + tag + pares clave=valor para reconstruir un giro de rueda.
+sub _dbg_wheel {
+    my ($self, $tag, %kv) = @_;
+    return unless $self && $self->_wheel_debug_enabled();
+
+    my $ts = sprintf('%.6f', Time::HiRes::time());
+    my $line = join(' ', map {
+        "$_=" . $self->_wheel_debug_value($kv{$_})
+    } sort keys %kv);
+
+    $self->_wheel_debug_log("[WHEEL $ts] $tag $line\n");
+}
+
+sub _disable_canvas_native_wheel_scroll {
+    my ($self, $canvas) = @_;
+    return unless $canvas;
+
+    # En X11 la rueda llega como Button-4/5 y la clase Tk::Canvas puede ejecutar
+    # yview scroll. Este canvas no debe desplazarse nunca en Y: todo el viewport
+    # lo maneja ChartEngine.
+    for my $seq (
+        '<Button-4>', '<Button-5>',
+        '<Control-Button-4>', '<Control-Button-5>',
+        '<MouseWheel>', '<Control-MouseWheel>',
+    ) {
+        eval { $canvas->bind('Canvas', $seq, '') };
+    }
+
+    eval {
+        my @tags = $canvas->bindtags;
+        my @filtered = grep { defined $_ && $_ ne 'Canvas' } @tags;
+        $canvas->bindtags(\@filtered) if @filtered != @tags;
+    };
+}
+
+sub _canvas_yview_first {
+    my ($self, $canvas) = @_;
+    return undef unless $canvas;
+    my @view = eval { $canvas->yview };
+    return @view ? $view[0] : undef;
+}
+
+sub _reset_canvas_yview {
+    my ($self, $canvas) = @_;
+    return unless $canvas;
+    eval { $canvas->yview('moveto', 0) };
+}
+
+sub _dispatch_wheel_event {
+    my ($self, $canvas, $event_name, $dir, $ctrl) = @_;
+    return unless $self && $canvas;
+
+    $self->_disable_canvas_native_wheel_scroll($canvas);
+    my $yview_before = $self->_canvas_yview_first($canvas);
+
+    my $x_evt = eval { $canvas->XEvent->x };
+    my $y_evt = eval { $canvas->XEvent->y };
+    my $x_before = $self->{crosshair_x};
+    my $y_before = $self->{crosshair_y};
+    my $canvas_w = eval { $canvas->width };
+    my $canvas_h = eval { $canvas->height };
+
+    $self->_dbg_wheel('EVT',
+        event              => $event_name,
+        dir                => $dir,
+        ctrl               => $ctrl ? 1 : 0,
+        ev_x               => $x_evt,
+        ev_y               => $y_evt,
+        crosshair_x_before => $x_before,
+        crosshair_y_before => $y_before,
+        self_w             => $self->{width},
+        self_h             => $self->{height},
+        canvas_w           => $canvas_w,
+        canvas_h           => $canvas_h,
+        yview_before       => $yview_before,
+        offset_before      => $self->{offset},
+        visible_before     => $self->{current_visible_bars},
+        x_shift_before     => $self->{x_shift},
+        view_start_before  => $self->{view_start},
+    );
+
+    $self->{crosshair_x} = defined $x_evt ? $x_evt : $self->{crosshair_x};
+    $self->{crosshair_y} = defined $y_evt ? $y_evt : $self->{crosshair_y};
+
+    my $now = time();
+    my $dt = defined $self->{wheel_last_ts} ? ($now - $self->{wheel_last_ts}) : 0;
+    $self->{wheel_event_counter} = 0 unless defined $self->{wheel_event_counter};
+    $self->{wheel_event_counter}++;
+    $self->{wheel_last_ts} = $now;
+    $self->{wheel_last_event} = $event_name;
+
+    if ($self->_wheel_debug_enabled()) {
+        my $x_after = $self->{crosshair_x};
+        my $y_after = $self->{crosshair_y};
+        my $price_strip = defined $x_after && defined $y_after ? ($self->_in_price_y_axis_strip($x_after, $y_after) ? 1 : 0) : 'undef';
+        my $atr_strip = defined $x_after && defined $y_after ? ($self->_in_atr_y_axis_strip($x_after, $y_after) ? 1 : 0) : 'undef';
+        $self->_wheel_debug_log(sprintf(
+            "WHEEL_ASSIGN ts=%.6f event=%s seq=%d dt=%.6f dir=%s ctrl=%s x_evt=%s y_evt=%s crosshair_before=(%s,%s) crosshair_after=(%s,%s) canvas=(%s,%s) self=(%s,%s) price_strip=%s atr_strip=%s\n",
+            $now,
+            defined $event_name ? $event_name : 'unknown',
+            $self->{wheel_event_counter},
+            $dt,
+            $self->_wheel_debug_value($dir),
+            $ctrl ? 1 : 0,
+            $self->_wheel_debug_value($x_evt),
+            $self->_wheel_debug_value($y_evt),
+            $self->_wheel_debug_value($x_before),
+            $self->_wheel_debug_value($y_before),
+            $self->_wheel_debug_value($x_after),
+            $self->_wheel_debug_value($y_after),
+            $self->_wheel_debug_value($canvas_w),
+            $self->_wheel_debug_value($canvas_h),
+            $self->_wheel_debug_value($self->{width}),
+            $self->_wheel_debug_value($self->{height}),
+            $price_strip,
+            $atr_strip,
+        ));
+    }
+
+    $self->_route_wheel_zoom($dir, $ctrl, $event_name, $self->{wheel_event_counter}, $dt);
+    $self->_reset_canvas_yview($canvas);
+    my $yview_after = $self->_canvas_yview_first($canvas);
+
+    $self->_dbg_wheel('AFTER',
+        event            => $event_name,
+        dir              => $dir,
+        ctrl             => $ctrl ? 1 : 0,
+        offset_after     => $self->{offset},
+        visible_after    => $self->{current_visible_bars},
+        x_shift_after    => $self->{x_shift},
+        view_start_after => $self->{view_start},
+        yview_after      => $yview_after,
+    );
+}
+
 sub _bind_all_canvas {
     my ($self, $canvas) = @_;
     return unless $canvas;
+    $self->_disable_canvas_native_wheel_scroll($canvas);
 
     # <Configure> se dispara cuando el canvas cambia de tamano (maximizar,
     # pantalla completa, redimensionar la ventana). Adaptamos las escalas al
@@ -346,21 +531,20 @@ sub _bind_all_canvas {
     # MainWindow y nunca toca ese binding de clase del Canvas).
     # Tk::break corta la propagacion al bindtag de clase y elimina el salto Y.
     $canvas->Tk::bind('<Button-4>' => sub {
-        $self->_route_wheel_zoom(-1, 0);
-        Tk::break;
+        $self->_dispatch_wheel_event($canvas, 'Button-4', -1, 0);
+        return Tk::break;
     });
     $canvas->Tk::bind('<Button-5>' => sub {
-        $self->_route_wheel_zoom(+1, 0);
-        Tk::break;
+        $self->_dispatch_wheel_event($canvas, 'Button-5', +1, 0);
+        return Tk::break;
     });
-    # CTRL + rueda: zoom horizontal anclado a la X del cursor (X11/Linux).
     $canvas->Tk::bind('<Control-Button-4>' => sub {
-        $self->_route_wheel_zoom(-1, 1);
-        Tk::break;
+        $self->_dispatch_wheel_event($canvas, 'Control-Button-4', -1, 1);
+        return Tk::break;
     });
     $canvas->Tk::bind('<Control-Button-5>' => sub {
-        $self->_route_wheel_zoom(+1, 1);
-        Tk::break;
+        $self->_dispatch_wheel_event($canvas, 'Control-Button-5', +1, 1);
+        return Tk::break;
     });
 }
 
@@ -380,11 +564,13 @@ sub bind_events {
     # Rueda del mouse (Windows/macOS) — enrutada segun panel bajo el cursor.
     $mw->bind('<MouseWheel>', [sub {
         my ($w, $delta) = @_;
-        $self->_route_wheel_zoom($delta > 0 ? -1 : +1, 0);
+        my $canvas = $self->{canvas};
+        $self->_dispatch_wheel_event($canvas, 'MouseWheel', $delta > 0 ? -1 : +1, 0);
     }, Tk::Ev('D')]);
     $mw->bind('<Control-MouseWheel>', [sub {
         my ($w, $delta) = @_;
-        $self->_route_wheel_zoom($delta > 0 ? -1 : +1, 1);
+        my $canvas = $self->{canvas};
+        $self->_dispatch_wheel_event($canvas, 'Control-MouseWheel', $delta > 0 ? -1 : +1, 1);
     }, Tk::Ev('D')]);
 
     $mw->bind('<Left>'  => sub { $self->_scroll_offset(1);  });
@@ -2174,27 +2360,136 @@ sub _in_time_axis {
 #   - Precio / eje tiempo -> zoom horizontal.
 #   - Ctrl               -> zoom horizontal anclado al cursor.
 sub _route_wheel_zoom {
-    my ($self, $dir, $ctrl) = @_;
+    my ($self, $dir, $ctrl, $event_name, $seq, $dt) = @_;
     return unless defined $dir;
 
-    if ($ctrl) {
-        $self->_horizontal_zoom_cursor($dir);
-        return;
-    }
+    # Resincroniza el tamano real ANTES de decidir la zona: evita el "salto
+    # vertical" en Linux/X11 por <Configure> retrasado/incompleto.
+    $self->_sync_canvas_geometry();
 
     my $x = $self->{crosshair_x};
     my $y = $self->{crosshair_y};
+    my $canvas = $self->{canvas};
+    my $canvas_w_before = eval { $canvas ? $canvas->width : undef };
+    my $canvas_h_before = eval { $canvas ? $canvas->height : undef };
+    my $price_strip_before = defined $x && defined $y ? ($self->_in_price_y_axis_strip($x, $y) ? 1 : 0) : 'undef';
+    my $atr_strip_before = defined $x && defined $y ? ($self->_in_atr_y_axis_strip($x, $y) ? 1 : 0) : 'undef';
+    $self->_dbg_wheel('ROUTE_CHECK',
+        event        => $event_name,
+        seq          => $seq,
+        dt           => $dt,
+        dir          => $dir,
+        ctrl         => $ctrl ? 1 : 0,
+        x            => $x,
+        y            => $y,
+        atr_strip    => $atr_strip_before,
+        price_strip  => $price_strip_before,
+        price_height => $self->{price_height},
+        atr_height   => $self->{atr_height},
+        strip_w      => $self->{price_scale}{y_axis_strip_w},
+        width        => $self->{width},
+        canvas_w     => $canvas_w_before,
+        canvas_h     => $canvas_h_before,
+    );
+    my $before = {
+        offset               => $self->{offset},
+        current_visible_bars => $self->{current_visible_bars},
+        x_shift              => $self->{x_shift},
+        view_start           => $self->{view_start},
+    };
 
-    if (defined $x && defined $y && $self->_in_atr_y_axis_strip($x, $y)) {
-        $self->_atr_zoom_wheel($dir);
-        return;
+    my $branch = 'horizontal';
+    if ($ctrl) {
+        $branch = 'horizontal_cursor';
+        $self->_dbg_wheel('ROUTE',
+            event  => $event_name,
+            seq    => $seq,
+            branch => $branch,
+            dir    => $dir,
+            ctrl   => 1,
+        );
+        $self->_horizontal_zoom_cursor($dir);
     }
-    if (defined $x && defined $y && $self->_in_price_y_axis_strip($x, $y)) {
-        $self->_vertical_zoom_scale($dir);
-        return;
+    else {
+        if (defined $x && defined $y && $self->_in_atr_y_axis_strip($x, $y)) {
+            $branch = 'vertical_atr';
+            $self->_dbg_wheel('ROUTE',
+                event  => $event_name,
+                seq    => $seq,
+                branch => $branch,
+                dir    => $dir,
+                ctrl   => 0,
+            );
+            $self->_atr_zoom_wheel($dir);
+        }
+        elsif (defined $x && defined $y && $self->_in_price_y_axis_strip($x, $y)) {
+            $branch = 'vertical_price';
+            $self->_dbg_wheel('ROUTE',
+                event  => $event_name,
+                seq    => $seq,
+                branch => $branch,
+                dir    => $dir,
+                ctrl   => 0,
+            );
+            $self->_vertical_zoom_scale($dir);
+        }
+        else {
+            $branch = 'horizontal';
+            $self->_dbg_wheel('ROUTE',
+                event  => $event_name,
+                seq    => $seq,
+                branch => $branch,
+                dir    => $dir,
+                ctrl   => 0,
+            );
+            $self->_horizontal_zoom($dir);
+        }
     }
 
-    $self->_horizontal_zoom($dir);
+    my $canvas_w_after = eval { $canvas ? $canvas->width : undef };
+    my $canvas_h_after = eval { $canvas ? $canvas->height : undef };
+    my $price_strip = defined $x && defined $y ? ($self->_in_price_y_axis_strip($x, $y) ? 1 : 0) : 'undef';
+    my $atr_strip = defined $x && defined $y ? ($self->_in_atr_y_axis_strip($x, $y) ? 1 : 0) : 'undef';
+    my $after = {
+        offset               => $self->{offset},
+        current_visible_bars => $self->{current_visible_bars},
+        x_shift              => $self->{x_shift},
+        view_start           => $self->{view_start},
+    };
+
+    if ($self->_wheel_debug_enabled()) {
+        $self->_wheel_debug_log(sprintf(
+            "WHEEL_ROUTE event=%s seq=%s dt=%s dir=%s ctrl=%s branch=%s x=%s y=%s crosshair=(%s,%s) canvas_before=(%s,%s) canvas_after=(%s,%s) self=(%s,%s) price_strip_before=%s atr_strip_before=%s price_strip_after=%s atr_strip_after=%s before{offset=%s visible=%s x_shift=%s view_start=%s} after{offset=%s visible=%s x_shift=%s view_start=%s}\n",
+            defined $event_name ? $event_name : 'unknown',
+            $self->_wheel_debug_value($seq),
+            $self->_wheel_debug_value($dt),
+            $self->_wheel_debug_value($dir),
+            $ctrl ? 1 : 0,
+            $branch,
+            $self->_wheel_debug_value($x),
+            $self->_wheel_debug_value($y),
+            $self->_wheel_debug_value($self->{crosshair_x}),
+            $self->_wheel_debug_value($self->{crosshair_y}),
+            $self->_wheel_debug_value($canvas_w_before),
+            $self->_wheel_debug_value($canvas_h_before),
+            $self->_wheel_debug_value($canvas_w_after),
+            $self->_wheel_debug_value($canvas_h_after),
+            $self->_wheel_debug_value($self->{width}),
+            $self->_wheel_debug_value($self->{height}),
+            $price_strip_before,
+            $atr_strip_before,
+            $price_strip,
+            $atr_strip,
+            $self->_wheel_debug_value($before->{offset}),
+            $self->_wheel_debug_value($before->{current_visible_bars}),
+            $self->_wheel_debug_value($before->{x_shift}),
+            $self->_wheel_debug_value($before->{view_start}),
+            $self->_wheel_debug_value($after->{offset}),
+            $self->_wheel_debug_value($after->{current_visible_bars}),
+            $self->_wheel_debug_value($after->{x_shift}),
+            $self->_wheel_debug_value($after->{view_start}),
+        ));
+    }
 }
 
 # _vertical_zoom_scale($dir) — solo precio (ATR usa ATRPanelZoom).
@@ -2487,6 +2782,25 @@ sub _on_mouse_move {
     return if $self->{y_axis_zoom_drag} || $self->{h_dragging} || $self->{rmb_dragging};
     $self->_draw_crosshair_all();
     $self->_draw_hud();
+}
+
+# _sync_canvas_geometry()
+# Reconsulta el ancho/alto REAL del canvas (via winfo) y resincroniza el motor
+# si difieren de los valores cacheados en $self->{width}/{height}. Existe
+# porque en Linux/X11 el <Configure> puede llegar con retraso o en pasos
+# intermedios mientras el WM termina de maximizar la ventana (en Windows no
+# pasa esto). Si width/height quedan desfasados aunque sea por pocos pixeles,
+# la franja del eje Y (width - strip_w) se corre hacia el area del grafico y
+# un giro de rueda normal se clasifica por error como "zoom vertical".
+# Se llama SIEMPRE antes de decidir la zona de un evento de rueda.
+sub _sync_canvas_geometry {
+    my ($self) = @_;
+    my $canvas = $self->{canvas};
+    return unless $canvas;
+    my $w = eval { $canvas->width  };
+    my $h = eval { $canvas->height };
+    return unless $w && $h && $w > 0 && $h > 0;
+    $self->resize($w, $h) if $w != $self->{width} || $h != $self->{height};
 }
 
 1;
