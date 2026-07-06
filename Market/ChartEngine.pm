@@ -665,50 +665,85 @@ sub build_control_panel {
         -background => $bg,
         -fg        => $fg,
         -font      => 'Helvetica 9 bold',
-    )->pack(-side => 'left', -padx => 8, -fill => 'x');
+    )->pack(-side => 'left', -padx => 8, -fill => 'x', -expand => 1);
 
     $self->{_overlay_vars} = {};
+    $self->{_indicator_sections} = {};
     my $settings = $self->{overlay_settings};
     my $schema = $settings && $settings->can('schema') ? $settings->schema() : [];
 
     for my $category (@$schema) {
         my $cat_label = $category->{label} || $category->{id};
-        my $button = $overlay_frame->Menubutton(
-            -text       => $cat_label,
+        my $section = $overlay_frame->Frame(-background => $bg)
+            ->pack(-side => 'left', -padx => 3, -pady => 2, -anchor => 'n');
+
+        my $header = $section->Button(
+            -text       => "$cat_label",
             -relief     => 'flat',
             -background => '#2a2e39',
             -foreground => $fg,
             -activebackground => '#363a45',
             -activeforeground => '#ffffff',
-            -font       => 'Helvetica 8',
+            -font       => 'Helvetica 8 bold',
             -padx       => 7,
             -pady       => 2,
-        )->pack(-side => 'left', -padx => 2, -pady => 2);
+            -command    => sub { $self->_toggle_indicator_section($category->{id}); },
+        )->pack(-side => 'top', -fill => 'x');
 
-        my $menu = $button->Menu(
-            -tearoff => 0,
-            -background => '#1e222d',
-            -foreground => $fg,
-            -activebackground => '#363a45',
-            -activeforeground => '#ffffff',
-        );
-        $button->configure(-menu => $menu);
+        my $body = $section->Frame(
+            -background => '#171b24',
+            -borderwidth => 1,
+            -relief => 'flat',
+        )->pack(-side => 'top', -fill => 'x');
+
+        $self->{_indicator_sections}{ $category->{id} } = {
+            open   => 1,
+            header => $header,
+            body   => $body,
+            label  => $cat_label,
+        };
 
         for my $opt (@{ $category->{options} || [] }) {
             my ($key, $label) = @$opt;
             $self->{_overlay_vars}{$key} = $settings->enabled($key);
-            $menu->checkbutton(
-                -label      => $label,
+            $body->Checkbutton(
+                -text       => $label,
                 -variable   => \$self->{_overlay_vars}{$key},
                 -selectcolor => '#2a2e39',
+                -background => '#171b24',
+                -foreground => $fg,
+                -activebackground => '#242936',
+                -activeforeground => '#ffffff',
+                -font       => 'Helvetica 8',
+                -anchor     => 'w',
+                -padx       => 4,
+                -pady       => 1,
                 -command    => sub {
                     $self->set_overlay_option($key, $self->{_overlay_vars}{$key});
                 },
-            );
+            )->pack(-side => 'top', -fill => 'x', -anchor => 'w');
         }
     }
 
     return $panel;
+}
+
+sub _toggle_indicator_section {
+    my ($self, $id) = @_;
+    return unless $self->{_indicator_sections} && $self->{_indicator_sections}{$id};
+    my $section = $self->{_indicator_sections}{$id};
+    my $body = $section->{body};
+    return unless $body;
+
+    if ($section->{open}) {
+        $body->packForget();
+        $section->{open} = 0;
+    }
+    else {
+        $body->pack(-side => 'top', -fill => 'x');
+        $section->{open} = 1;
+    }
+    return $self;
 }
 
 # set_overlay_option($key, $flag)
@@ -1590,11 +1625,11 @@ sub _draw_overlays {
     return unless $self->{canvas};
     return unless $self->{overlay_manager};
 
-    # Limpiar TODAS las capas registradas aunque esten desactivadas.
-    # Si solo se dibujaran las activas, al desmarcar un checkbox los elementos
-    # previos quedarian pegados al canvas (draw() ya no se invoca -> sin clear).
+    # Limpiar capas desactivadas. Las capas activas gestionan su propio diff:
+    # algunas reutilizan objetos persistentes entre renders para evitar churn.
     if ($self->{overlay_manager}->can('list')) {
         for my $name (@{ $self->{overlay_manager}->list() || [] }) {
+            next if $self->{overlay_manager}->is_enabled($name);
             my $overlay = $self->{overlay_manager}->get($name);
             $overlay->clear($self->{canvas}) if $overlay && $overlay->can('clear');
         }

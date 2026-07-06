@@ -7,7 +7,7 @@ use File::Basename qw(dirname);
 use File::Spec;
 use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
 
-use Market::Overlays::LabelLayout;
+use Market::Overlays::RenderPolicy;
 
 sub new {
     my ($class, %args) = @_;
@@ -76,7 +76,12 @@ sub draw {
             if defined $data->{metadata}{show_internal};
     }
 
-    if (_enabled($settings, 'show_internal_zigzag')) {
+    my $tier = Market::Overlays::RenderPolicy::zoom_tier(scale => $scale);
+
+    if (_enabled($settings, 'show_internal_zigzag')
+        && Market::Overlays::RenderPolicy::visible_for_zoom(
+            tier => $tier, kind => 'internal_zigzag'
+        )) {
         _draw_zigzag($canvas, $scale, $internal_swings, $start_idx, $end_idx,
             '#6f7f89', 1, [2, 3], 'overlay_structure');
     }
@@ -131,6 +136,19 @@ sub draw {
         my $ty = $y + $dy;
         next unless _y_in_clip($ty, $clip_y_top, $clip_y_bottom);
 
+        my $priority = Market::Overlays::RenderPolicy::priority_for(
+            kind => 'swing',
+            label => $abbr,
+            scope => $scope,
+        );
+        next unless Market::Overlays::RenderPolicy::visible_for_zoom(
+            tier => $tier,
+            kind => 'swing',
+            label => $abbr,
+            scope => $scope,
+            priority => $priority,
+        );
+
         push @labels, {
             index      => $idx,
             x_base     => $x,
@@ -140,8 +158,10 @@ sub draw {
             text       => $scope eq 'internal' ? lc($abbr) : $abbr,
             fg         => $fg,
             bg         => $bg,
-            priority   => $scope eq 'internal' ? 3 : 5,
+            priority   => $priority,
             kind       => 'swing',
+            scope      => $scope,
+            limit_bucket => 'swing',
         };
         $swing_rendered++;
     }
@@ -167,11 +187,22 @@ sub draw {
         next unless _show_event_label($settings, $label);
         my ($fg, $bg) = _event_style($point, $self->{style});
 
-        my $x = $scale->index_to_center_x($idx);
+        my ($span_x1, $span_x2, $span_y) = _event_span($point, $scale, $level, $idx, $anchor_y);
+        my $x = defined $span_x1 && defined $span_x2
+            ? ($span_x1 + $span_x2) / 2
+            : $scale->index_to_center_x($idx);
         my $dir = lc($point->{direction} // $point->{new_trend} // '');
-        my $dy  = ($dir eq 'bearish') ? $tag_offset : -$tag_offset;
-        my $ty  = $anchor_y + $dy;
+        my $is_break = ($label =~ /^(?:BOS|CHoCH)/i && defined $span_y) ? 1 : 0;
+        my $dy  = $is_break ? 0 : (($dir eq 'bearish') ? $tag_offset : -$tag_offset);
+        my $ty  = ($is_break ? $span_y : $anchor_y) + $dy;
         next unless _y_in_clip($ty, $clip_y_top, $clip_y_bottom);
+
+        my $priority = Market::Overlays::RenderPolicy::priority_for(
+            kind  => 'event',
+            type  => $point->{type},
+            label => $label,
+            scope => $point->{scope} // 'external',
+        );
 
         push @labels, {
             index      => $idx,
@@ -182,21 +213,60 @@ sub draw {
             text       => $label,
             fg         => $fg,
             bg         => $bg,
-            priority   => 10,
+            span       => ($is_break ? {
+                x1 => $span_x1,
+                x2 => $span_x2,
+                y  => $span_y,
+                break_x => $scale->index_to_center_x($idx),
+            } : undef),
+            fixed_position => $is_break ? 1 : 0,
+            no_group       => $is_break ? 1 : 0,
+            priority   => $priority,
+            protected  => ($label =~ /^(?:BOS|CHoCH)/i) ? 1 : 0,
             kind       => 'event',
+            type       => $point->{type},
+            scope      => $point->{scope} // 'external',
+            limit_bucket => ($label =~ /^BOS/i) ? 'bos'
+                          : ($label =~ /^CHoCH/i) ? 'choch'
+                          : 'event',
         };
         $event_rendered++;
     }
 
-    my ($shift_steps, $collision_count) = Market::Overlays::LabelLayout::resolve_collisions(
+    my $before_policy = scalar(@labels);
+    my $zoom_filtered = Market::Overlays::RenderPolicy::filter_for_zoom(
         \@labels,
-        y_threshold => 12,
-        x_step      => 14,
+        scale => $scale,
+        tier  => $tier,
     );
+    my $limited = Market::Overlays::RenderPolicy::apply_context_limits(
+        $zoom_filtered,
+        scale    => $scale,
+        tier     => $tier,
+        settings => $settings,
+    );
+    my $grouped = Market::Overlays::RenderPolicy::group_nearby(
+        $limited,
+        scale => $scale,
+    );
+    @labels = @$grouped;
+
+    my $collision_audit = Market::Overlays::RenderPolicy::resolve_collisions(
+        \@labels,
+        scale => $scale,
+    );
+    my $shift_steps = $collision_audit->{shifted} || 0;
+    my $collision_count = $collision_audit->{collisions} || 0;
 
     for my $item (@labels) {
-        _draw_leader($canvas, $item->{anchor_x}, $item->{anchor_y},
-            $item->{x_base}, $item->{y_base}, $item->{fg});
+        next if $item->{hidden};
+        if ($item->{span}) {
+            _draw_event_span($canvas, $item, $self->{style});
+        }
+        else {
+            _draw_leader($canvas, $item->{anchor_x}, $item->{anchor_y},
+                $item->{x_base}, $item->{y_base}, $item->{fg});
+        }
         _draw_tag($canvas, $item->{x_base}, $item->{y_base},
             $item->{text}, $item->{fg}, $item->{bg}, $self->{style});
     }
@@ -210,6 +280,9 @@ sub draw {
         discarded_invalid     => $discarded_invalid,
         collisions_avoided    => $collision_count,
         shift_steps_applied   => $shift_steps,
+        hidden_by_policy      => $before_policy - scalar(@labels),
+        hidden_by_collision   => $collision_audit->{hidden} || 0,
+        zoom_tier             => $tier,
         rendered              => scalar(@labels),
     };
 
@@ -280,6 +353,45 @@ sub _event_anchor_y {
     }
     return $scale->value_to_y($level) if defined $level;
     return undef;
+}
+
+sub _event_span {
+    my ($point, $scale, $level, $idx, $fallback_y) = @_;
+    return (undef, undef, undef) unless $point && $scale;
+
+    my $origin_idx = defined $point->{break_index} ? $point->{break_index}
+                   : defined $point->{swing_index} ? $point->{swing_index}
+                   : undef;
+    return (undef, undef, undef) unless defined $origin_idx && defined $idx;
+
+    my $x1 = $scale->index_to_center_x($origin_idx);
+    my $x2 = $scale->index_to_center_x($idx);
+    ($x1, $x2) = ($x2, $x1) if $x2 < $x1;
+    $x2 = $x1 + 1 if $x2 <= $x1;
+
+    my $y = defined $level ? $scale->value_to_y($level) : $fallback_y;
+    return (undef, undef, undef) unless defined $y;
+    return ($x1, $x2, $y);
+}
+
+sub _draw_event_span {
+    my ($canvas, $item, $style) = @_;
+    return unless $canvas && $item && $item->{span};
+    my $span = $item->{span};
+    return unless defined $span->{x1} && defined $span->{x2} && defined $span->{y};
+    my $fg = $item->{fg} || '#d8dee9';
+    $canvas->createLine($span->{x1}, $span->{y}, $span->{x2}, $span->{y},
+        -fill => $fg,
+        -width => 1,
+        -tags => ['overlay_structure'],
+    );
+    if (defined $span->{break_x}) {
+        $canvas->createLine($span->{break_x}, $span->{y} - 4, $span->{break_x}, $span->{y} + 4,
+            -fill => $fg,
+            -width => 1,
+            -tags => ['overlay_structure'],
+        );
+    }
 }
 
 sub _draw_leader {

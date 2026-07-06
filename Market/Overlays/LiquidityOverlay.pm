@@ -7,7 +7,7 @@ use File::Basename qw(dirname);
 use File::Spec;
 use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
 
-use Market::Overlays::LabelLayout;
+use Market::Overlays::RenderPolicy;
 
 sub new {
     my ($class, %args) = @_;
@@ -17,6 +17,7 @@ sub new {
         scale => $args{scale},
         settings => $args{settings},
         elements => [],
+        object_cache => {},
         style => {
             font       => 'Helvetica 7',
             event_font => 'Helvetica 7 bold',
@@ -51,7 +52,7 @@ sub draw {
     return unless $canvas && $scale;
     return unless $data && ref($data) eq 'HASH';
 
-    $self->clear($canvas);
+    $canvas->delete('overlay_liquidity_dynamic') if $canvas && $canvas->can('delete');
 
     my $levels    = $data->{liquidity_levels} || $data->{levels} || [];
     my $eq_levels = $data->{eq_levels} || [];
@@ -59,7 +60,9 @@ sub draw {
     my $settings  = $self->{settings};
 
     my @labels;
+    my %visible_level_ids;
     my $label_count = 0;
+    my $tier = Market::Overlays::RenderPolicy::zoom_tier(scale => $scale);
 
     if (ref($levels) eq 'ARRAY') {
         for my $level (@$levels) {
@@ -76,8 +79,22 @@ sub draw {
             my $scope = $level->{scope} // 'external';
             next if $scope eq 'internal' && !_enabled($settings, 'show_internal_liquidity');
             next if $scope ne 'internal' && !_enabled($settings, 'show_external_liquidity');
+            my $priority = Market::Overlays::RenderPolicy::priority_for(
+                kind  => $scope eq 'internal' ? 'minor_liquidity' : 'liquidity',
+                type  => $ltype,
+                label => $ltype,
+                scope => $scope,
+            );
+            next unless Market::Overlays::RenderPolicy::visible_for_zoom(
+                tier => $tier,
+                kind => $scope eq 'internal' ? 'minor_liquidity' : 'liquidity',
+                type => $ltype,
+                label => $ltype,
+                scope => $scope,
+                priority => $priority,
+            );
 
-            my $fill   = _liquidity_color($ltype);
+            my ($fill, $width, $dash) = _liquidity_visual($level);
             my $price_y = $scale->value_to_y($price);
             my $text_y = $price_y + _liquidity_y_offset($level->{type});
             next unless _y_in_clip($price_y, $clip_y_top, $clip_y_bottom);
@@ -87,19 +104,28 @@ sub draw {
                 ? $scale->index_to_x($end_idx)
                 : ($x1 + ($scale->{width} || 800) - ($scale->{y_axis_strip_w} || 66));
             $x_end = $x1 + 8 if $x_end <= $x1;
-            my $text_x = $x1 + 4;
+            my $text_x = $x_end - 4;
+            my $level_id = _level_id($level, $idx, $price);
+            $visible_level_ids{$level_id} = 1;
+            _upsert_level_line($self, $canvas, $level_id, $x1, $price_y, $x_end, $fill, $width, $dash);
 
             push @labels, {
                 index      => $idx,
                 x_base     => $text_x,
                 y_base     => $text_y,
                 text       => ($level->{type} || 'LEV'),
-                anchor     => 'w',
+                anchor     => 'e',
                 fill       => $fill,
                 font       => $self->{style}{font},
                 bg         => $self->{style}{bg},
-                line       => { x1 => $x1, x2 => $x_end, y => $price_y, dash => 1 },
+                line       => { x1 => $x1, x2 => $x_end, y => $price_y, dash => $dash },
                 type       => 'liquidity',
+                priority   => $priority,
+                protected  => $scope ne 'internal' ? 1 : 0,
+                no_group   => $scope ne 'internal' ? 1 : 0,
+                scope      => $scope,
+                limit_bucket => 'liquidity',
+                level_id   => $level_id,
             };
             $label_count++;
         }
@@ -125,8 +151,30 @@ sub draw {
             my $xm       = ($x1 + $x2) / 2;
 
             $canvas->createLine($x1, $y, $x2, $y,
-                -fill => $fill, -width => 2, -dash => [4, 3], -tags => ['overlay_liquidity']);
-            # Texto EQH/EQL lo dibuja StructureOverlay; aqui solo la linea guia.
+                -fill => $fill, -width => 2, -dash => [4, 3], -tags => ['overlay_liquidity_dynamic']);
+            push @labels, {
+                index      => $second_idx,
+                x_base     => $xm,
+                y_base     => $y,
+                text       => $eq->{type} || 'EQ',
+                anchor     => 'c',
+                fill       => $fill,
+                font       => $self->{style}{font},
+                bg         => $self->{style}{bg},
+                type       => 'eq',
+                priority   => Market::Overlays::RenderPolicy::priority_for(
+                    kind => 'liquidity',
+                    type => $eq->{type},
+                    label => $eq->{type},
+                    scope => 'external',
+                ),
+                protected  => 1,
+                fixed_position => 1,
+                no_group       => 1,
+                scope      => 'external',
+                limit_bucket => lc($eq->{type} || 'eq'),
+            };
+            $label_count++;
         }
     }
 
@@ -149,7 +197,12 @@ sub draw {
             };
         }
         @candidates = sort { $b->{sweep} <=> $a->{sweep} } @candidates;
-        my $max_events = 40;
+        my $max_events = Market::Overlays::RenderPolicy::limit_for(
+            tier => $tier,
+            kind => 'event',
+            key => 'render_max_liquidity_events',
+            settings => $settings,
+        );
         @candidates = @candidates[0 .. $max_events - 1] if @candidates > $max_events;
 
         for my $item (@candidates) {
@@ -159,6 +212,21 @@ sub draw {
 
             my $label  = _event_label($event);
             next unless _show_event($settings, $event->{type});
+            my $priority = Market::Overlays::RenderPolicy::priority_for(
+                kind => lc($event->{type} // 'event'),
+                type => $event->{type},
+                label => $label,
+                scope => $event->{scope} // 'external',
+            );
+            next unless Market::Overlays::RenderPolicy::visible_for_zoom(
+                tier => $tier,
+                kind => lc($event->{type} // 'event'),
+                type => $event->{type},
+                label => $label,
+                scope => $event->{scope} // 'external',
+                priority => $priority,
+                protected => ($event->{type} || '') eq 'Run' ? 1 : 0,
+            );
             my $fill   = _event_color($event);
             my $x      = $scale->index_to_center_x($idx);
             my $price_y = $scale->value_to_y($price);
@@ -179,46 +247,73 @@ sub draw {
                 bg         => $self->{style}{bg},
                 line       => { x => $x, y1 => $price_y, y2 => $line_y },
                 type       => 'event',
+                event_type => $event->{type},
+                priority   => $priority,
+                protected  => ($event->{type} || '') eq 'Run' ? 1 : 0,
+                scope      => $event->{scope} // 'external',
+                limit_bucket => lc($event->{type} || 'event'),
             };
             $label_count++;
         }
     }
 
-    my $shift_steps = 0;
-    my $collision_count = 0;
-    ($shift_steps, $collision_count) = Market::Overlays::LabelLayout::resolve_collisions(
+    my $before_policy = scalar(@labels);
+    my $zoom_filtered = Market::Overlays::RenderPolicy::filter_for_zoom(
         \@labels,
-        y_threshold => 10,
-        x_step      => 12,
+        scale => $scale,
+        tier  => $tier,
     );
+    my $limited = Market::Overlays::RenderPolicy::apply_context_limits(
+        $zoom_filtered,
+        scale    => $scale,
+        tier     => $tier,
+        settings => $settings,
+    );
+    my $grouped = Market::Overlays::RenderPolicy::group_nearby(
+        $limited,
+        scale => $scale,
+    );
+    @labels = @$grouped;
+
+    my $collision_audit = Market::Overlays::RenderPolicy::resolve_collisions(
+        \@labels,
+        scale => $scale,
+    );
+    my $shift_steps = $collision_audit->{shifted} || 0;
+    my $collision_count = $collision_audit->{collisions} || 0;
 
     for my $item (@labels) {
+        next if $item->{hidden};
         if ($item->{type} && $item->{type} eq 'event' && $item->{line}) {
             $item->{line}->{x} = $item->{x_base};
         }
     }
 
     for my $item (@labels) {
+        next if $item->{hidden};
         if ($item->{type} && $item->{type} eq 'liquidity') {
-            my $line = $item->{line};
-            $canvas->createLine($line->{x1}, $line->{y}, $line->{x2}, $line->{y},
-                -fill => $item->{fill}, -width => 1,
-                -dash => ($line->{dash} ? [4, 3] : undef),
-                -tags => ['overlay_liquidity']);
+            _draw_tag($canvas, $item, $self->{style});
+        }
+        elsif ($item->{type} && $item->{type} eq 'eq') {
             _draw_tag($canvas, $item, $self->{style});
         }
         else {
             my $line = $item->{line};
             $canvas->createLine($line->{x}, $line->{y1}, $line->{x}, $line->{y2},
-                -fill => $item->{fill}, -width => 1, -tags => ['overlay_liquidity']);
+                -fill => $item->{fill}, -width => 1, -tags => ['overlay_liquidity_dynamic']);
             _draw_tag($canvas, $item, $self->{style});
         }
     }
+
+    _hide_stale_level_lines($self, $canvas, \%visible_level_ids);
 
     $self->{visual_stabilization_audit} = {
         labels_processed       => $label_count,
         shift_steps_applied    => $shift_steps,
         collisions_avoided     => $collision_count,
+        hidden_by_policy       => $before_policy - scalar(@labels),
+        hidden_by_collision    => $collision_audit->{hidden} || 0,
+        zoom_tier              => $tier,
     };
 
     return $self;
@@ -253,22 +348,26 @@ sub _draw_tag {
     my $x = $item->{x_base};
     my $y = $item->{y_base};
     my $anchor = $item->{anchor} || 'c';
-    my $left = $anchor eq 'w' ? $x : $x - $w / 2;
-    my $right = $anchor eq 'w' ? $x + $w : $x + $w / 2;
+    my $left = $anchor eq 'w' ? $x
+             : $anchor eq 'e' ? $x - $w
+             : $x - $w / 2;
+    my $right = $anchor eq 'w' ? $x + $w
+              : $anchor eq 'e' ? $x
+              : $x + $w / 2;
 
     $canvas->createRectangle(
         $left, $y - $h / 2, $right, $y + $h / 2,
         -fill => $item->{bg} || $style->{bg} || '#14191d',
         -outline => $item->{fill},
         -width => 1,
-        -tags => ['overlay_liquidity'],
+        -tags => ['overlay_liquidity_dynamic'],
     );
     $canvas->createText($x, $y,
         -text   => $text,
         -anchor => $anchor,
         -fill   => $item->{fill},
         -font   => $item->{font} || $style->{font} || 'Helvetica 7',
-        -tags   => ['overlay_liquidity'],
+        -tags   => ['overlay_liquidity_dynamic'],
     );
 }
 
@@ -287,6 +386,97 @@ sub _liquidity_color {
     return '#9c27b0' if defined $type && $type eq 'EQH';
     return '#7b1fa2' if defined $type && $type eq 'EQL';
     return '#4dd0e1';
+}
+
+sub _liquidity_visual {
+    my ($level) = @_;
+    my $type = $level->{type};
+    my $state = lc($level->{state} // $level->{status} // 'detected');
+    my $fill = _liquidity_color($type);
+    my $width = 1;
+    my $dash = [4, 3];
+
+    if ($state eq 'candidate') {
+        $fill = '#5f6872';
+        $dash = [2, 4];
+    }
+    elsif ($state eq 'swept') {
+        $width = 2;
+        $dash = undef;
+    }
+    elsif ($state eq 'acceptance') {
+        $width = 3;
+        $dash = undef;
+    }
+    elsif ($state eq 'reclaimed') {
+        $fill = '#7d8991';
+        $dash = [5, 5];
+    }
+    elsif ($state eq 'run') {
+        $fill = '#42a5f5';
+        $width = 3;
+        $dash = undef;
+    }
+    elsif ($state eq 'resolved') {
+        $fill = '#4b535b';
+        $dash = [1, 5];
+    }
+
+    return ($fill, $width, $dash);
+}
+
+sub _level_id {
+    my ($level, $idx, $price) = @_;
+    return $level->{id} if defined $level->{id} && $level->{id} ne '';
+    return join(':',
+        'liq',
+        $level->{scope} // 'external',
+        $level->{type}  // 'LEV',
+        defined $idx ? $idx : 'na',
+        defined $price ? sprintf('%.5f', $price) : 'na',
+    );
+}
+
+sub _upsert_level_line {
+    my ($self, $canvas, $id, $x1, $y, $x2, $fill, $width, $dash) = @_;
+    return unless $canvas && defined $id;
+    my $cache = $self->{object_cache} ||= {};
+    my $item_id = $cache->{$id};
+    my @tags = ('overlay_liquidity', 'overlay_liquidity_level', "liq_level_$id");
+
+    if ($item_id && $canvas->can('coords') && $canvas->can('itemconfigure')) {
+        eval {
+            $canvas->coords($item_id, $x1, $y, $x2, $y);
+            $canvas->itemconfigure($item_id,
+                -fill => $fill,
+                -width => $width,
+                -dash => ($dash || ''),
+                -state => 'normal',
+            );
+            1;
+        } and return;
+    }
+
+    $item_id = $canvas->createLine($x1, $y, $x2, $y,
+        -fill => $fill,
+        -width => $width,
+        -dash => ($dash || undef),
+        -tags => \@tags,
+    );
+    $cache->{$id} = $item_id if defined $item_id;
+}
+
+sub _hide_stale_level_lines {
+    my ($self, $canvas, $visible) = @_;
+    return unless $self && $canvas;
+    my $cache = $self->{object_cache} || {};
+    for my $id (keys %$cache) {
+        next if $visible && $visible->{$id};
+        my $item_id = $cache->{$id};
+        if ($canvas->can('itemconfigure')) {
+            eval { $canvas->itemconfigure($item_id, -state => 'hidden'); 1; };
+        }
+    }
 }
 
 sub _liquidity_y_offset {
@@ -352,7 +542,9 @@ sub clear {
     my ($self, $canvas) = @_;
     $canvas ||= $self->{canvas};
     $canvas->delete('overlay_liquidity') if $canvas && $canvas->can('delete');
+    $canvas->delete('overlay_liquidity_dynamic') if $canvas && $canvas->can('delete');
     $self->{elements} = [];
+    $self->{object_cache} = {};
     return $self;
 }
 
