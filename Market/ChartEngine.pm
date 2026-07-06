@@ -7,7 +7,11 @@ package Market::ChartEngine;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use Tk;
 use Time::HiRes qw(time);
+use lib File::Spec->catdir(dirname(__FILE__), '..');
 
 # Activa el logging de diagnostico del wheel/zoom si la variable de entorno
 # CHART_DEBUG_WHEEL=1 esta definida al arrancar market.pl. No afecta nada si
@@ -20,6 +24,7 @@ use Market::Panels::Scales;
 use Market::MarketData;
 use Market::Core::EventBus;
 use Market::Core::OverlayManager;
+use Market::Core::OverlaySettings;
 use Market::Core::ReplayController;
 use Market::Core::TimeframeManager;
 use Market::Core::ViewportController;
@@ -92,10 +97,17 @@ sub new {
         liquidity => $liquidity_engine,
     );
     my $fvg_engine = $args{fvg_engine} || Market::Concepts::FVGEngine->new();
+    my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
-    my $liquidity_overlay = Market::Overlays::LiquidityOverlay->new(canvas => $canvas, scale => $price_scale);
-    my $structure_overlay = Market::Overlays::StructureOverlay->new(canvas => $canvas, scale => $price_scale);
-    my $fvg_overlay = Market::Overlays::FVGOverlay->new(canvas => $canvas, scale => $price_scale);
+    my $liquidity_overlay = Market::Overlays::LiquidityOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $structure_overlay = Market::Overlays::StructureOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $fvg_overlay = Market::Overlays::FVGOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
 
     my $self = {
         canvas               => $canvas,
@@ -103,6 +115,7 @@ sub new {
         indicator_manager    => $indicator_manager,
         event_bus            => $args{event_bus} || Market::Core::EventBus->new(),
         overlay_manager      => $args{overlay_manager} || Market::Core::OverlayManager->new(),
+        overlay_settings     => $overlay_settings,
         replay_controller    => $args{replay_controller} || Market::Core::ReplayController->new(),
         timeframe_manager    => $args{timeframe_manager} || Market::Core::TimeframeManager->new(),
         viewport_controller  => $args{viewport_controller} || Market::Core::ViewportController->new(),
@@ -648,40 +661,65 @@ sub build_control_panel {
     }
 
     my $overlay_frame = $panel->Labelframe(
-        -text      => ' Overlays ',
+        -text      => ' Indicators ',
         -background => $bg,
         -fg        => $fg,
         -font      => 'Helvetica 9 bold',
-    )->pack(-side => 'left', -padx => 8);
-
-    my %labels = (
-        liquidity => 'Liquidez',
-        structure => 'SMC',
-        fvg       => 'FVG',
-    );
+    )->pack(-side => 'left', -padx => 8, -fill => 'x');
 
     $self->{_overlay_vars} = {};
-    for my $name (qw(liquidity structure fvg)) {
-        my $enabled = $self->{overlay_manager} && $self->{overlay_manager}->can('is_enabled')
-            ? $self->{overlay_manager}->is_enabled($name) : 1;
-        $self->{_overlay_vars}{$name} = $enabled ? 1 : 0;
+    my $settings = $self->{overlay_settings};
+    my $schema = $settings && $settings->can('schema') ? $settings->schema() : [];
 
-        $overlay_frame->Checkbutton(
-            -text       => ($labels{$name} || $name),
-            -variable   => \$self->{_overlay_vars}{$name},
-            -background => $bg,
+    for my $category (@$schema) {
+        my $cat_label = $category->{label} || $category->{id};
+        my $button = $overlay_frame->Menubutton(
+            -text       => $cat_label,
+            -relief     => 'flat',
+            -background => '#2a2e39',
             -foreground => $fg,
-            -selectcolor => '#2a2e39',
-            -activebackground => $bg,
+            -activebackground => '#363a45',
+            -activeforeground => '#ffffff',
             -font       => 'Helvetica 8',
-            -command    => sub {
-                my $n = $name;
-                $self->set_overlay_enabled($n, $self->{_overlay_vars}{$n});
-            },
-        )->pack(-side => 'left', -padx => 4);
+            -padx       => 7,
+            -pady       => 2,
+        )->pack(-side => 'left', -padx => 2, -pady => 2);
+
+        my $menu = $button->Menu(
+            -tearoff => 0,
+            -background => '#1e222d',
+            -foreground => $fg,
+            -activebackground => '#363a45',
+            -activeforeground => '#ffffff',
+        );
+        $button->configure(-menu => $menu);
+
+        for my $opt (@{ $category->{options} || [] }) {
+            my ($key, $label) = @$opt;
+            $self->{_overlay_vars}{$key} = $settings->enabled($key);
+            $menu->checkbutton(
+                -label      => $label,
+                -variable   => \$self->{_overlay_vars}{$key},
+                -selectcolor => '#2a2e39',
+                -command    => sub {
+                    $self->set_overlay_option($key, $self->{_overlay_vars}{$key});
+                },
+            );
+        }
     }
 
     return $panel;
+}
+
+# set_overlay_option($key, $flag)
+sub set_overlay_option {
+    my ($self, $key, $enabled) = @_;
+    return unless $self->{overlay_settings};
+    $self->{overlay_settings}->set($key, $enabled);
+    $self->{overlay_settings}->save() if $self->{overlay_settings}->can('save');
+    $self->_sync_overlay_layer_state();
+    $self->render();
+    return $self;
 }
 
 # set_overlay_enabled($name, $flag)
@@ -695,6 +733,39 @@ sub set_overlay_enabled {
         $self->{overlay_manager}->disable($name) if $self->{overlay_manager}->can('disable');
     }
     $self->render();
+    return $self;
+}
+
+sub _sync_overlay_layer_state {
+    my ($self) = @_;
+    return unless $self->{overlay_manager} && $self->{overlay_settings};
+    my $s = $self->{overlay_settings};
+
+    my $structure_on =
+        $s->enabled('show_swing_high') || $s->enabled('show_swing_low')
+        || $s->enabled('show_hh') || $s->enabled('show_hl')
+        || $s->enabled('show_lh') || $s->enabled('show_ll')
+        || $s->enabled('show_bos') || $s->enabled('show_choch')
+        || $s->enabled('show_eqh') || $s->enabled('show_eql')
+        || $s->enabled('show_internal_zigzag') || $s->enabled('show_external_zigzag')
+        || $s->enabled('show_internal_swings') || $s->enabled('show_external_swings');
+
+    my $liquidity_on =
+        $s->enabled('show_liquidity_levels')
+        || $s->enabled('show_internal_liquidity') || $s->enabled('show_external_liquidity')
+        || $s->enabled('show_sweeps') || $s->enabled('show_grabs') || $s->enabled('show_runs');
+
+    my $fvg_on = $s->enabled('show_fvg');
+
+    for my $pair ([structure => $structure_on], [liquidity => $liquidity_on], [fvg => $fvg_on]) {
+        my ($name, $on) = @$pair;
+        if ($on) {
+            $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
+        }
+        else {
+            $self->{overlay_manager}->disable($name) if $self->{overlay_manager}->can('disable');
+        }
+    }
     return $self;
 }
 
@@ -1682,6 +1753,7 @@ sub _register_overlays {
         $self->{overlay_manager}->register($name, $overlay);
         $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
     }
+    $self->_sync_overlay_layer_state();
     return $self;
 }
 
@@ -1738,6 +1810,13 @@ sub rebuild_analysis_cache {
     my $structure_data = $self->{structure_engine}->calculate(
         $self->{market_data}, %engine_args, liquidity_result => $liquidity_data,
     );
+    if ($self->{liquidity_engine} && $self->{liquidity_engine}->can('apply_structure_filter')) {
+        $liquidity_data = $self->{liquidity_engine}->apply_structure_filter(
+            $structure_data,
+            $self->{market_data},
+            %engine_args,
+        ) || $liquidity_data;
+    }
     $self->_enrich_liquidity_with_structure_scope($liquidity_data, $structure_data);
     my $fvg_data = $self->{fvg_engine}->calculate(
         $self->{market_data}, $self->{structure_engine}, %engine_args,
@@ -1760,7 +1839,7 @@ sub _enrich_liquidity_with_structure_scope {
     return unless $structure_data && ref $structure_data eq 'HASH';
 
     my %scope_by_index;
-    for my $sw (@{ $structure_data->{swings} || [] }) {
+    for my $sw (@{ $structure_data->{external_swings} || $structure_data->{swings} || [] }) {
         next unless $sw && ref $sw eq 'HASH';
         next unless defined $sw->{index};
         $scope_by_index{ $sw->{index} } = $sw->{scope} // 'internal';

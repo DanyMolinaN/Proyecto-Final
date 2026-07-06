@@ -3,6 +3,10 @@ package Market::Strategies::StrategyBuilder;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use Market::Strategies::RuleEngine;
 use Market::Strategies::SignalEngine;
 use Market::Strategies::TradeSetup;

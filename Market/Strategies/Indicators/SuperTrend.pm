@@ -41,13 +41,14 @@ sub calculate {
     }
     return {} unless @candles;
 
-    my @atr_values = _compute_atr($market_data, \
+    my @atr_values = _compute_atr($market_data,
         period => $period,
         limit => $limit,
     );
     my @st;
     my @signals;
     my $prev_trend;
+    my $prev_st;
 
     for my $i (0 .. $#candles) {
         my $candle = $candles[$i];
@@ -59,20 +60,19 @@ sub calculate {
         my $basic_lower = $hl2 - ($multiplier * $atr);
 
         my ($final_upper, $final_lower);
-        if ($i == 0) {
+        if (!$prev_st) {
             $final_upper = $basic_upper;
             $final_lower = $basic_lower;
         } else {
-            my $prev = $st[$i-1];
-            $final_upper = ($basic_upper < $prev->{final_upper} || $prev->{close} > $prev->{final_upper})
+            $final_upper = ($basic_upper < $prev_st->{final_upper} || $prev_st->{close} > $prev_st->{final_upper})
                 ? $basic_upper
-                : $prev->{final_upper};
-            $final_lower = ($basic_lower > $prev->{final_lower} || $prev->{close} < $prev->{final_lower})
+                : $prev_st->{final_upper};
+            $final_lower = ($basic_lower > $prev_st->{final_lower} || $prev_st->{close} < $prev_st->{final_lower})
                 ? $basic_lower
-                : $prev->{final_lower};
+                : $prev_st->{final_lower};
         }
 
-        my $trend = $i == 0 ? 'bullish' : $prev_trend;
+        my $trend = !$prev_st ? 'bullish' : $prev_trend;
         my $close = $candle->{close};
         if ($close > $final_upper) {
             $trend = 'bullish';
@@ -95,13 +95,14 @@ sub calculate {
             push @signals, $signal;
         }
 
-        push @st, {
+        $st[$i] = {
             index => $i,
             final_upper => $final_upper,
             final_lower => $final_lower,
             trend => $trend,
             close => $close,
         };
+        $prev_st = $st[$i];
         $prev_trend = $trend;
     }
 

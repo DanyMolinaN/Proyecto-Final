@@ -3,6 +3,10 @@ package Market::Volume::AnchoredVWAP;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use Market::Volume::VWAPCalculator;
 use Market::Volume::AnchorResolver;
 use Market::Volume::SessionAnchors;

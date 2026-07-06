@@ -1,0 +1,27 @@
+# Chart overlay visibility settings
+show_anchored_vwap=0
+show_bos=0
+show_choch=1
+show_entries=0
+show_eqh=1
+show_eql=1
+show_external_liquidity=1
+show_external_swings=1
+show_external_zigzag=1
+show_fvg=1
+show_grabs=1
+show_hh=1
+show_hl=1
+show_internal_liquidity=0
+show_internal_swings=0
+show_internal_zigzag=0
+show_lh=1
+show_liquidity_levels=1
+show_ll=1
+show_orderblocks=0
+show_runs=1
+show_signals=0
+show_sweeps=1
+show_swing_high=1
+show_swing_low=1
+show_volume_profile=0

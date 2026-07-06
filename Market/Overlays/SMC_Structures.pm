@@ -10,6 +10,10 @@ package Market::Overlays::SMC_Structures;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use parent 'Market::Overlays::StructureOverlay';
 
 1;

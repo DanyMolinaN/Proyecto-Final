@@ -38,6 +38,8 @@ sub detect {
             index              => $e->{index},            # vela de confirmacion
             break_index        => $e->{swing_index},      # swing roto
             confirmation_index => $e->{index},
+            scope              => $e->{scope} || 'external',
+            hierarchy          => $e->{hierarchy},
         };
     }
 

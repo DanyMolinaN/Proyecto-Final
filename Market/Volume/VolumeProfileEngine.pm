@@ -3,6 +3,10 @@ package Market::Volume::VolumeProfileEngine;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use Market::Volume::SessionProfile;
 
 sub new {

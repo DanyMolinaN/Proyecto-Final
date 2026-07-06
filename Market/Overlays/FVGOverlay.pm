@@ -9,6 +9,7 @@ sub new {
         data => undef,
         canvas => $args{canvas},
         scale => $args{scale},
+        settings => $args{settings},
         elements => [],
         min_strength => 0.08,
         %args,
@@ -36,6 +37,10 @@ sub draw {
     return unless $data;
 
     $self->clear($canvas);
+    return $self if $self->{settings}
+        && $self->{settings}->can('enabled')
+        && !$self->{settings}->enabled('show_fvg');
+
     my $gaps = $data->{gaps} || [];
     return $self unless ref($gaps) eq 'ARRAY';
 

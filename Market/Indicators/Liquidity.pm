@@ -37,6 +37,8 @@ sub new {
         liquidity_levels => [],
         events         => [],
         metadata       => {},
+        accept_bars    => $args{accept_bars},
+        grab_window    => $args{grab_window},
         visible_only   => 0,
         replay_limit   => undef,
         cache          => {},
@@ -125,6 +127,70 @@ sub calculate {
 sub events { my ($self) = @_; return $self->{events} || []; }
 sub levels { my ($self) = @_; return $self->{liquidity_levels} || []; }
 sub swings { my ($self) = @_; return $self->{swings} || []; }
+
+sub apply_structure_filter {
+    my ($self, $structure_data, $market_data, %args) = @_;
+    return unless $structure_data && ref $structure_data eq 'HASH';
+
+    my %validated;
+    my @validated_swings;
+    for my $scope (qw(internal external)) {
+        my $key = $scope . '_swings';
+        for my $sw (@{ $structure_data->{$key} || [] }) {
+            next unless $sw && ref $sw eq 'HASH';
+            next unless defined $sw->{index};
+            next unless $self->_important_structural_swing($sw, $scope);
+            $validated{ $sw->{index} } = {
+                scope      => $scope,
+                hierarchy  => $sw->{hierarchy} || ($scope eq 'external' ? 'Intermediate' : 'Minor'),
+                prominence => $sw->{prominence},
+                label      => $sw->{label},
+            };
+            push @validated_swings, { %$sw, scope => $scope };
+        }
+    }
+
+    my @kept_eq = grep {
+        $_ && ref $_ eq 'HASH'
+        && (defined $_->{first_index} || defined $_->{second_index})
+        && ($validated{ $_->{first_index} } || $validated{ $_->{second_index} })
+    } @{ $self->{eq_levels} || [] };
+
+    my $candles = $args{candles};
+    if (!$candles && $market_data) {
+        $candles = $self->_candles_for_analysis($market_data, replay_controller => $args{replay_controller});
+    }
+
+    $self->{liquidity_levels} = [];
+    $self->{eq_levels} = \@kept_eq;
+    $self->{events} = [];
+    $self->_build_liquidity_levels($candles, swings => \@validated_swings, eq_levels => \@kept_eq)
+        if $candles && @$candles;
+    $self->_process_liquidity_lifecycle($candles)
+        if $candles && @$candles;
+
+    $self->{metadata}{structure_validated} = 1;
+    $self->{metadata}{validated_swing_count} = scalar @validated_swings;
+    $self->{metadata}{validated_level_count} = scalar @{ $self->{liquidity_levels} || [] };
+    $self->{metadata}{validated_event_count} = scalar @{ $self->{events} || [] };
+
+    return {
+        swings => $self->{swings},
+        eq_levels => $self->{eq_levels},
+        liquidity_levels => $self->{liquidity_levels},
+        events => $self->{events},
+        metadata => $self->{metadata},
+    };
+}
+
+sub _important_structural_swing {
+    my ($self, $swing, $scope) = @_;
+    return 0 unless $swing && ref $swing eq 'HASH';
+    my $rank = $swing->{hierarchy} || '';
+    return 1 if ($scope || '') eq 'external' && ($rank eq 'Major' || $rank eq 'Intermediate');
+    return 1 if ($scope || '') eq 'internal' && $rank eq 'Major';
+    return 0;
+}
 
 sub visible_only {
     my ($self, $flag) = @_;
@@ -266,12 +332,18 @@ sub _detect_eq_levels {
 }
 
 sub _build_liquidity_levels {
-    my ($self, $candles) = @_;
+    my ($self, $candles, %args) = @_;
     return unless $candles && @$candles;
     $self->{liquidity_levels} = [];
     my $counter = 0;
+    my $source_swings = $args{swings} || $self->{swings} || [];
+    my $eq_levels = $args{eq_levels} || $self->{eq_levels} || [];
 
-    for my $swing (@{ $self->{swings} || [] }) {
+    for my $swing (@$source_swings) {
+        next unless $swing && ref $swing eq 'HASH';
+        next unless defined $swing->{index} && defined $swing->{price};
+        my $source_type = $swing->{source_type} || $swing->{type} || '';
+        next unless $source_type eq 'swing_high' || $source_type eq 'swing_low';
         my $level = {
             id            => 'L' . ++$counter,
             state         => 'Detected',
@@ -280,14 +352,24 @@ sub _build_liquidity_levels {
             created_index => $swing->{index},
             last_touch    => $swing->{index},
             volume        => $self->_volume_for_index($candles, $swing->{index}),
-            type          => $swing->{type} eq 'swing_high' ? 'BSL' : 'SSL',
-            side          => $swing->{type} eq 'swing_high' ? 'buy' : 'sell',
-            transitions   => [ { state => 'Detected', index => $swing->{index} } ],
+            type          => $source_type eq 'swing_high' ? 'BSL' : 'SSL',
+            side          => $source_type eq 'swing_high' ? 'buy' : 'sell',
+            scope         => $swing->{scope} || 'external',
+            hierarchy     => $swing->{hierarchy},
+            prominence    => $swing->{prominence},
+            structural_weight => undef,
+            transitions   => [
+                { state => 'Candidate', index => $swing->{index} },
+                { state => 'Validated Swing', index => $swing->{index} },
+                { state => 'Liquidity Candidate', index => $swing->{index} },
+                { state => 'Detected', index => $swing->{index} },
+            ],
         };
+        $level->{structural_weight} = $self->_structural_weight($level);
         push @{ $self->{liquidity_levels} }, $level;
     }
 
-    for my $eq (@{ $self->{eq_levels} || [] }) {
+    for my $eq (@$eq_levels) {
         my $type = $eq->{type} || 'EQH';
         push @{ $self->{liquidity_levels} }, {
             id            => 'L' . ++$counter,
@@ -300,7 +382,14 @@ sub _build_liquidity_levels {
             type          => $type,
             side          => ($type eq 'EQH') ? 'buy' : 'sell',
             eq_pair       => 1,
-            transitions   => [ { state => 'Detected', index => $eq->{second_index} } ],
+            scope         => 'external',
+            hierarchy     => 'Intermediate',
+            transitions   => [
+                { state => 'Candidate', index => $eq->{second_index} },
+                { state => 'Validated Swing', index => $eq->{second_index} },
+                { state => 'Liquidity Candidate', index => $eq->{second_index} },
+                { state => 'Detected', index => $eq->{second_index} },
+            ],
         };
     }
 }
@@ -312,8 +401,8 @@ sub _process_liquidity_lifecycle {
     my ($self, $candles) = @_;
     return unless $candles && @$candles;
 
-    my $accept_bars = 3;
-    my $grab_window = 3;
+    my $accept_bars = $self->{accept_bars} || $self->{k} || 1;
+    my $grab_window = $self->{grab_window} || $self->{k} || 1;
     my @events;
     my $event_id = 0;
 
@@ -484,6 +573,18 @@ sub _apply_visibility_filter {
     $self->{eq_levels} = [ grep { $_->{first_index} <= $visible_limit && $_->{second_index} <= $visible_limit } @{ $self->{eq_levels} || [] } ];
     $self->{liquidity_levels} = [ grep { $_->{created_index} <= $visible_limit } @{ $self->{liquidity_levels} || [] } ];
     $self->{events} = [ grep { $_->{end} <= $visible_limit } @{ $self->{events} || [] } ];
+}
+
+sub _structural_weight {
+    my ($self, $level) = @_;
+    return 0 unless $level && ref $level eq 'HASH';
+    my $tol = $self->{metadata}{tolerance} || 1;
+    $tol = 1 if $tol <= 0;
+    my $prominence = $level->{prominence} || 0;
+    my $weight = $prominence / $tol;
+    $weight += 1 if ($level->{scope} || '') eq 'external';
+    $weight += 1 if $level->{eq_pair};
+    return sprintf('%.4f', $weight) + 0;
 }
 
 sub _volume_for_index {

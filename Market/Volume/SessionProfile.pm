@@ -3,6 +3,10 @@ package Market::Volume::SessionProfile;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use Market::Volume::PriceDistribution;
 use Market::Volume::POCCalculator;
 use Market::Volume::ValueAreaCalculator;

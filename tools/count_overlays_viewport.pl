@@ -44,6 +44,7 @@ my $fvg = Market::Concepts::FVGEngine->new();
 
 my $lq = $liq->calculate($md);
 my $st = $struct->calculate($md, liquidity_result => $lq);
+$lq = $liq->apply_structure_filter($st, $md) || $lq;
 my $fv = $fvg->calculate($md, $struct);
 
 my $levels = $lq->{liquidity_levels} || [];

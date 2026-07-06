@@ -3,8 +3,9 @@ package Market::Overlays::LiquidityOverlay;
 use strict;
 use warnings;
 
-use FindBin qw($Bin);
-use lib "$Bin/../..";
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
 
 use Market::Overlays::LabelLayout;
 
@@ -14,7 +15,17 @@ sub new {
         data => undef,
         canvas => $args{canvas},
         scale => $args{scale},
+        settings => $args{settings},
         elements => [],
+        style => {
+            font       => 'Helvetica 7',
+            event_font => 'Helvetica 7 bold',
+            pad_x      => 3,
+            pad_y      => 1,
+            text_w     => 5,
+            text_h     => 10,
+            bg         => '#14191d',
+        },
         %args,
     };
     bless $self, $class;
@@ -45,6 +56,7 @@ sub draw {
     my $levels    = $data->{liquidity_levels} || $data->{levels} || [];
     my $eq_levels = $data->{eq_levels} || [];
     my $events    = $data->{events} || [];
+    my $settings  = $self->{settings};
 
     my @labels;
     my $label_count = 0;
@@ -60,8 +72,10 @@ sub draw {
 
             my $ltype = $level->{type} // '';
             next if $level->{eq_pair};    # EQH/EQL: linea en bloque eq_levels
-            next if ($ltype eq 'BSL' || $ltype eq 'SSL')
-                && ($level->{scope} // 'external') eq 'internal';
+            next unless _enabled($settings, 'show_liquidity_levels');
+            my $scope = $level->{scope} // 'external';
+            next if $scope eq 'internal' && !_enabled($settings, 'show_internal_liquidity');
+            next if $scope ne 'internal' && !_enabled($settings, 'show_external_liquidity');
 
             my $fill   = _liquidity_color($ltype);
             my $price_y = $scale->value_to_y($price);
@@ -82,7 +96,8 @@ sub draw {
                 text       => ($level->{type} || 'LEV'),
                 anchor     => 'w',
                 fill       => $fill,
-                font       => 'Helvetica 7',
+                font       => $self->{style}{font},
+                bg         => $self->{style}{bg},
                 line       => { x1 => $x1, x2 => $x_end, y => $price_y, dash => 1 },
                 type       => 'liquidity',
             };
@@ -101,6 +116,8 @@ sub draw {
             next if defined $end_idx && $first_idx > $end_idx;
 
             my $fill     = _eq_color($eq->{type});
+            next if ($eq->{type} || '') eq 'EQH' && !_enabled($settings, 'show_eqh');
+            next if ($eq->{type} || '') eq 'EQL' && !_enabled($settings, 'show_eql');
             my $x1       = $scale->index_to_x($first_idx);
             my $x2       = $scale->index_to_x($second_idx);
             my $y        = $scale->value_to_y($price);
@@ -141,6 +158,7 @@ sub draw {
             my $price = $item->{price};
 
             my $label  = _event_label($event);
+            next unless _show_event($settings, $event->{type});
             my $fill   = _event_color($event);
             my $x      = $scale->index_to_center_x($idx);
             my $price_y = $scale->value_to_y($price);
@@ -157,7 +175,8 @@ sub draw {
                 text       => $label,
                 anchor     => $anchor,
                 fill       => $fill,
-                font       => 'Helvetica 8 bold',
+                font       => $self->{style}{event_font},
+                bg         => $self->{style}{bg},
                 line       => { x => $x, y1 => $price_y, y2 => $line_y },
                 type       => 'event',
             };
@@ -186,25 +205,13 @@ sub draw {
                 -fill => $item->{fill}, -width => 1,
                 -dash => ($line->{dash} ? [4, 3] : undef),
                 -tags => ['overlay_liquidity']);
-            $canvas->createText($item->{x_base}, $item->{y_base},
-                -text   => $item->{text},
-                -anchor => $item->{anchor},
-                -fill   => $item->{fill},
-                -font   => $item->{font},
-                -tags   => ['overlay_liquidity'],
-            );
+            _draw_tag($canvas, $item, $self->{style});
         }
         else {
             my $line = $item->{line};
             $canvas->createLine($line->{x}, $line->{y1}, $line->{x}, $line->{y2},
                 -fill => $item->{fill}, -width => 1, -tags => ['overlay_liquidity']);
-            $canvas->createText($item->{x_base}, $item->{y_base},
-                -text   => $item->{text},
-                -anchor => $item->{anchor},
-                -fill   => $item->{fill},
-                -font   => $item->{font},
-                -tags   => ['overlay_liquidity'],
-            );
+            _draw_tag($canvas, $item, $self->{style});
         }
     }
 
@@ -215,6 +222,54 @@ sub draw {
     };
 
     return $self;
+}
+
+sub _enabled {
+    my ($settings, $key) = @_;
+    return 1 unless $settings && $settings->can('enabled');
+    return $settings->enabled($key);
+}
+
+sub _show_event {
+    my ($settings, $type) = @_;
+    $type ||= '';
+    return _enabled($settings, 'show_sweeps') if $type eq 'Sweep';
+    return _enabled($settings, 'show_grabs')  if $type eq 'Grab';
+    return _enabled($settings, 'show_runs')   if $type eq 'Run';
+    return 1;
+}
+
+sub _draw_tag {
+    my ($canvas, $item, $style) = @_;
+    return unless $canvas && $item;
+    $style ||= {};
+    my $text = $item->{text};
+    return unless defined $text;
+
+    my $pad_x = $style->{pad_x} || 3;
+    my $pad_y = $style->{pad_y} || 1;
+    my $w = length($text) * ($style->{text_w} || 5) + $pad_x * 2;
+    my $h = ($style->{text_h} || 10) + $pad_y * 2;
+    my $x = $item->{x_base};
+    my $y = $item->{y_base};
+    my $anchor = $item->{anchor} || 'c';
+    my $left = $anchor eq 'w' ? $x : $x - $w / 2;
+    my $right = $anchor eq 'w' ? $x + $w : $x + $w / 2;
+
+    $canvas->createRectangle(
+        $left, $y - $h / 2, $right, $y + $h / 2,
+        -fill => $item->{bg} || $style->{bg} || '#14191d',
+        -outline => $item->{fill},
+        -width => 1,
+        -tags => ['overlay_liquidity'],
+    );
+    $canvas->createText($x, $y,
+        -text   => $text,
+        -anchor => $anchor,
+        -fill   => $item->{fill},
+        -font   => $item->{font} || $style->{font} || 'Helvetica 7',
+        -tags   => ['overlay_liquidity'],
+    );
 }
 
 sub _y_in_clip {

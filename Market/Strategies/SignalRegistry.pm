@@ -3,6 +3,10 @@ package Market::Strategies::SignalRegistry;
 use strict;
 use warnings;
 
+use File::Basename qw(dirname);
+use File::Spec;
+use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
+
 use Market::Strategies::Indicators::SuperTrend;
 use Market::Strategies::Indicators::RangeFilter;
 use Market::Strategies::Indicators::SupplyDemand;

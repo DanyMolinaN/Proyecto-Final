@@ -140,5 +140,22 @@ sub run_engine {
     print "OK Test5 trend=$trend\n";
 }
 
+# ── Test 6: jerarquia ZigZag interno/externo disponible ──────────────────────
+{
+    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13,
+                  15, 17, 19, 17, 15, 16, 18, 20, 18, 16);
+    my ($res) = run_engine(@closes);
+    die "Test6: missing internal_swings\n" unless ref($res->{internal_swings}) eq 'ARRAY';
+    die "Test6: missing external_swings\n" unless ref($res->{external_swings}) eq 'ARRAY';
+    die "Test6: external_swings must match public swings\n"
+        unless scalar(@{ $res->{external_swings} }) == scalar(@{ $res->{swings} || [] });
+
+    my $zigzag = $res->{metadata}{zigzag} || {};
+    die "Test6: missing internal zigzag metadata\n" unless ref($zigzag->{internal}) eq 'HASH';
+    die "Test6: missing external zigzag metadata\n" unless ref($zigzag->{external}) eq 'HASH';
+
+    print "OK Test6 zigzag hierarchy: internal=@{[scalar @{ $res->{internal_swings} }]} external=@{[scalar @{ $res->{external_swings} }]}\n";
+}
+
 print "ALL structure tests passed.\n";
 exit 0;
