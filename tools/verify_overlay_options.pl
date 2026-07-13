@@ -64,15 +64,15 @@ $loaded->set('show_external_zigzag', 0)->set('show_internal_zigzag', 1);
 $loaded->set('show_internal_swings', 0)->set('show_external_swings', 0);
 $loaded->set('show_bos', 0)->set('show_choch', 0);
 $structure->draw(canvas => $canvas, scale => $scale, data => $structure_data, start_idx => 0, end_idx => 10);
-die "Internal ZigZag did not render independently\n" unless $canvas->count_type('line') == 1;
+die "Internal ZigZag did not render independently\n" unless $canvas->count_type('line') == 2;
 
 $loaded->set('show_external_zigzag', 1)->set('show_internal_zigzag', 0);
 $structure->draw(canvas => $canvas, scale => $scale, data => $structure_data, start_idx => 0, end_idx => 10);
-die "External ZigZag did not render independently\n" unless $canvas->count_type('line') == 1;
+die "External ZigZag did not render independently\n" unless $canvas->count_type('line') == 2;
 
 $loaded->set('show_external_zigzag', 1)->set('show_internal_zigzag', 1);
 $structure->draw(canvas => $canvas, scale => $scale, data => $structure_data, start_idx => 0, end_idx => 10);
-die "Both ZigZags did not render simultaneously\n" unless $canvas->count_type('line') == 2;
+die "Both ZigZags did not render simultaneously\n" unless $canvas->count_type('line') == 4;
 
 $loaded->set('show_external_zigzag', 0)->set('show_internal_zigzag', 0);
 $loaded->set('show_external_swings', 1)->set('show_hh', 0)->set('show_hl', 1);

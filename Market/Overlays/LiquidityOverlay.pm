@@ -354,6 +354,10 @@ sub _draw_tag {
     my $right = $anchor eq 'w' ? $x + $w
               : $anchor eq 'e' ? $x
               : $x + $w / 2;
+    my $text_x = $anchor eq 'w' ? $left + $pad_x
+               : $anchor eq 'e' ? $right - $pad_x
+               : ($left + $right) / 2;
+    my $text_anchor = ($anchor eq 'w' || $anchor eq 'e') ? $anchor : 'c';
 
     $canvas->createRectangle(
         $left, $y - $h / 2, $right, $y + $h / 2,
@@ -362,9 +366,9 @@ sub _draw_tag {
         -width => 1,
         -tags => ['overlay_liquidity_dynamic'],
     );
-    $canvas->createText($x, $y,
+    $canvas->createText($text_x, $y,
         -text   => $text,
-        -anchor => $anchor,
+        -anchor => $text_anchor,
         -fill   => $item->{fill},
         -font   => $item->{font} || $style->{font} || 'Helvetica 7',
         -tags   => ['overlay_liquidity_dynamic'],
@@ -504,7 +508,7 @@ sub _event_y_offset {
 sub _event_label {
     my ($event) = @_;
     if (defined $event->{type} && $event->{type} eq 'Sweep') {
-        return ($event->{direction} // '') eq 'down' ? 'SWEEP ↓' : 'SWEEP ↑';
+        return 'SWEEP';
     }
     return 'LQ RUN'  if defined $event->{type} && $event->{type} eq 'Run';
     return 'LQ GRAB' if defined $event->{type} && $event->{type} eq 'Grab';

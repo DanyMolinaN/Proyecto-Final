@@ -77,17 +77,24 @@ sub draw {
     }
 
     my $tier = Market::Overlays::RenderPolicy::zoom_tier(scale => $scale);
+    my $tentative = {};
+    if ( exists $data->{metadata} && ref( $data->{metadata} ) eq 'HASH' ) {
+        $tentative = $data->{metadata}{zigzag_tentative} || {};
+    }
 
-    if (_enabled($settings, 'show_internal_zigzag')
-        && Market::Overlays::RenderPolicy::visible_for_zoom(
-            tier => $tier, kind => 'internal_zigzag'
-        )) {
-        _draw_zigzag($canvas, $scale, $internal_swings, $start_idx, $end_idx,
-            '#6f7f89', 1, [2, 3], 'overlay_structure');
+    if (_enabled($settings, 'show_internal_zigzag')) {
+        _draw_zigzag(
+            $canvas, $scale, $internal_swings,
+            $tentative->{internal},
+            '#42a5f5', 2, [5, 4], 'overlay_structure_internal',
+        );
     }
     if (_enabled($settings, 'show_external_zigzag')) {
-        _draw_zigzag($canvas, $scale, $external_swings, $start_idx, $end_idx,
-            '#d8dee9', 2, undef, 'overlay_structure');
+        _draw_zigzag(
+            $canvas, $scale, $external_swings,
+            $tentative->{external},
+            '#eceff4', 3, undef, 'overlay_structure_external',
+        );
     }
 
     my $cw = $scale->{candle_width} || 8;
@@ -320,27 +327,56 @@ sub _show_event_label {
 }
 
 sub _draw_zigzag {
-    my ($canvas, $scale, $swings, $start_idx, $end_idx, $fill, $width, $dash, $tag) = @_;
+    my ($canvas, $scale, $swings, $tentative, $fill, $width, $dash, $tag) = @_;
     return unless $canvas && $scale && $swings && ref($swings) eq 'ARRAY';
-    my @points;
-    for my $s (sort { ($a->{index} // 0) <=> ($b->{index} // 0) } @$swings) {
-        next unless $s && ref($s) eq 'HASH';
-        my $idx = $s->{index};
-        my $price = $s->{price};
-        next unless defined $idx && defined $price;
-        next if defined $start_idx && $idx < $start_idx - 1;
-        next if defined $end_idx && $idx > $end_idx + 1;
-        push @points, $scale->index_to_center_x($idx), $scale->value_to_y($price);
+
+    my @sorted = sort { ($a->{index} // 0) <=> ($b->{index} // 0) }
+        grep { $_ && ref $_ eq 'HASH' && defined $_->{index} && defined $_->{price} } @$swings;
+
+    if ($tentative && ref($tentative) eq 'HASH'
+        && defined $tentative->{to_index} && defined $tentative->{to_price} )
+    {
+        my $last = $sorted[-1];
+        if ($last && ($last->{index} // -1) == ( $tentative->{from_index} // -2 )) {
+            push @sorted, {
+                index => $tentative->{to_index},
+                price => $tentative->{to_price},
+                _tentative => 1,
+            };
+        }
+        elsif (!@sorted) {
+            push @sorted, {
+                index => $tentative->{from_index},
+                price => $tentative->{from_price},
+            }, {
+                index => $tentative->{to_index},
+                price => $tentative->{to_price},
+                _tentative => 1,
+            };
+        }
     }
-    return unless @points >= 4;
-    my @args = (
-        @points,
-        -fill => $fill,
-        -width => $width,
-        -tags => [$tag],
-    );
-    push @args, (-dash => $dash) if $dash;
-    $canvas->createLine(@args);
+
+    return unless @sorted >= 1;
+
+    for my $i (1 .. $#sorted) {
+        my $a = $sorted[ $i - 1 ];
+        my $b = $sorted[$i];
+        next unless defined $a->{price} && defined $b->{price};
+        my $x1 = $scale->index_to_center_x( $a->{index} );
+        my $y1 = $scale->value_to_y( $a->{price} );
+        my $x2 = $scale->index_to_center_x( $b->{index} );
+        my $y2 = $scale->value_to_y( $b->{price} );
+        my @args = (
+            $x1, $y1, $x2, $y2,
+            -fill => $fill,
+            -width => $width,
+            -tags => [$tag],
+        );
+        push @args, ( -dash => $dash ) if $dash && !$b->{_tentative};
+        push @args, ( -dash => [4, 4] ) if $b->{_tentative};
+        $canvas->createLine(@args);
+    }
+    return;
 }
 
 sub _event_anchor_y {
@@ -527,7 +563,11 @@ sub _y_in_clip {
 sub clear {
     my ($self, $canvas) = @_;
     $canvas ||= $self->{canvas};
-    $canvas->delete('overlay_structure') if $canvas && $canvas->can('delete');
+    if ( $canvas && $canvas->can('delete') ) {
+        $canvas->delete('overlay_structure');
+        $canvas->delete('overlay_structure_internal');
+        $canvas->delete('overlay_structure_external');
+    }
     $self->{elements} = [];
     return $self;
 }

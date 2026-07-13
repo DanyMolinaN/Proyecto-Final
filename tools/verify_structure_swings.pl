@@ -3,40 +3,59 @@ use strict;
 use warnings;
 use lib '.';
 
+use File::Spec;
+use Time::Piece;
+
+use Market::MarketData;
 use Market::Indicators::Liquidity;
 use Market::Structure::StructureEngine;
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-{
-    package _FakeMD;
-    sub new { my ($class, $c) = @_; bless { candles => $c }, $class; }
-    sub size { scalar @{ shift->{candles} } }
-    sub get_candle { my ($s, $i) = @_; return $s->{candles}[$i]; }
-    sub active_tf { '1m' }
-}
+sub load_test_market {
+    my ($tf) = @_;
+    $tf ||= '5m';
 
-sub make_candles_from_closes {
-    my (@closes) = @_;
-    my @candles;
-    for my $i (0 .. $#closes) {
-        my $c = $closes[$i];
-        push @candles, {
-            timestamp => 1700000000 + $i * 60,
-            open  => $i ? $closes[$i-1] : $c - 1,
-            high  => $c + 1,
-            low   => $c - 1,
-            close => $c,
-            volume => 10,
-        };
+    my $csv = File::Spec->catfile('data', '2026_07_06.csv');
+    die "missing test CSV: $csv\n" unless -e $csv;
+
+    my $market = Market::MarketData->new();
+    open my $fh, '<', $csv or die "$csv: $!\n";
+    my $header = <$fh>;
+    my $tz_set = 0;
+    while (my $line = <$fh>) {
+        chomp $line;
+        next unless $line =~ /\S/;
+        my ($timestamp, $open, $high, $low, $close, $volume) = split /,/, $line;
+        unless ($tz_set) {
+            if ($timestamp =~ /([+-])(\d{2}):?(\d{2})$/) {
+                my $sec = ($2 * 3600) + ($3 * 60);
+                $market->set_tz_offset($1 eq '-' ? -$sec : $sec);
+                $tz_set = 1;
+            }
+        }
+        my $s = $timestamp;
+        $s =~ s/:(?=\d{2}$)//;
+        my $epoch = eval { Time::Piece->strptime($s, '%Y-%m-%dT%H:%M:%S%z')->epoch };
+        $market->add_candle({
+            timestamp => $epoch // time,
+            open  => $open + 0,
+            high  => $high + 0,
+            low   => $low + 0,
+            close => $close + 0,
+            volume => $volume + 0,
+        });
     }
-    return @candles;
+    close $fh;
+
+    $market->build_timeframes();
+    $market->set_timeframe($tf);
+    return $market;
 }
 
 sub run_engine {
-    my (@closes) = @_;
-    my @candles = make_candles_from_closes(@closes);
-    my $md  = _FakeMD->new(\@candles);
+    my ($md) = @_;
+    $md ||= load_test_market('5m');
     my $liq = Market::Indicators::Liquidity->new(k => 1);
     my $eng = Market::Structure::StructureEngine->new(liquidity => $liq);
     my $lq  = $liq->calculate($md);
@@ -46,8 +65,7 @@ sub run_engine {
 
 # ── Test 1: clasificacion HH/HL/LH/LL basica ─────────────────────────────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13);
-    my ($res) = run_engine(@closes);
+    my ($res) = run_engine();
     my $swings = $res->{swings} || [];
 
     my @labels = map { $_->{label} || '' } grep { ($_->{label} || '') ne '' } @$swings;
@@ -55,7 +73,10 @@ sub run_engine {
 
     my %have;
     $have{$_}++ for @labels;
-    die "Test1: missing HH in @labels\n" unless $have{HH};
+    die "Test1: missing high-side label in @labels\n"
+        unless $have{HH} || $have{LH};
+    die "Test1: missing low-side label in @labels\n"
+        unless $have{LL} || $have{HL};
 
     for my $s (@$swings) {
         next unless $s->{label};
@@ -68,21 +89,22 @@ sub run_engine {
                 if $s->{label} =~ /^(HH|LH|EQH)$/;
         }
     }
-    print "OK Test1 basic labels: @labels\n";
+    print "OK Test1 basic labels: @{[ @labels[0..9] ]}\n";
 }
 
 # ── Test 2: scope external/internal asignado ─────────────────────────────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13);
-    my ($res) = run_engine(@closes);
+    my ($res) = run_engine();
     my $swings = $res->{swings} || [];
+    my $internal_swings = $res->{internal_swings} || [];
 
-    my @scoped = grep { defined $_->{scope} } @$swings;
+    my @scoped = grep { defined $_->{scope} } (@$swings, @$internal_swings);
     die "Test2: no swings with scope field\n" unless @scoped >= 2;
 
     my @external = grep { ($_->{scope} // '') eq 'external' && ($_->{label} || '') ne '' } @$swings;
-    my @internal = grep { ($_->{scope} // '') eq 'internal' && ($_->{label} || '') ne '' } @$swings;
+    my @internal = grep { ($_->{scope} // '') eq 'internal' && ($_->{label} || '') ne '' } @$internal_swings;
     die "Test2: expected at least one external swing\n" unless @external >= 1;
+    die "Test2: expected at least one internal swing\n" unless @internal >= 1;
 
     for my $s (@external) {
         my $lbl = $s->{label};
@@ -97,9 +119,7 @@ sub run_engine {
 
 # ── Test 3: BOS/CHoCH solo referencian swings externos ───────────────────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13,
-                  15, 17, 19, 17, 15, 16, 18, 20, 18, 16);
-    my ($res) = run_engine(@closes);
+    my ($res) = run_engine();
 
     my %ext_idx = map { $_->{index} => 1 }
         grep { ($_->{scope} // '') eq 'external' } @{ $res->{swings} || [] };
@@ -118,22 +138,21 @@ sub run_engine {
 
 # ── Test 4: re-clasificacion vs swing externo previo (tolerancia ATR) ────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11, 10, 11, 13, 15, 13, 11);
-    my ($res, $lq) = run_engine(@closes);
+    my ($res, $lq) = run_engine();
     my $tol = $lq->{metadata}{tolerance} // 0;
     die "Test4: tolerance should be > 0 from ATR\n" unless $tol > 0;
 
     my $meta = $res->{metadata} || {};
     die "Test4: metadata missing tolerance\n" unless defined $meta->{tolerance};
     die "Test4: metadata missing external_count\n" unless defined $meta->{external_count};
+    die "Test4: external_count should be > 0\n" unless ($meta->{external_count} // 0) > 0;
 
     print "OK Test4 ATR tolerance=$tol external_count=$meta->{external_count}\n";
 }
 
 # ── Test 5: tendencia derivada de swings externos ────────────────────────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13);
-    my ($res) = run_engine(@closes);
+    my ($res) = run_engine();
     my $trend = $res->{trend} // 'neutral';
     die "Test5: trend should be bullish or bearish, got $trend\n"
         unless $trend eq 'bullish' || $trend eq 'bearish' || $trend eq 'neutral';
@@ -142,9 +161,7 @@ sub run_engine {
 
 # ── Test 6: jerarquia ZigZag interno/externo disponible ──────────────────────
 {
-    my @closes = (10, 12, 14, 12, 10, 11, 13, 15, 13, 11,  9, 10, 12, 14, 12, 10,  8,  9, 11, 13,
-                  15, 17, 19, 17, 15, 16, 18, 20, 18, 16);
-    my ($res) = run_engine(@closes);
+    my ($res) = run_engine();
     die "Test6: missing internal_swings\n" unless ref($res->{internal_swings}) eq 'ARRAY';
     die "Test6: missing external_swings\n" unless ref($res->{external_swings}) eq 'ARRAY';
     die "Test6: external_swings must match public swings\n"
@@ -153,6 +170,14 @@ sub run_engine {
     my $zigzag = $res->{metadata}{zigzag} || {};
     die "Test6: missing internal zigzag metadata\n" unless ref($zigzag->{internal}) eq 'HASH';
     die "Test6: missing external zigzag metadata\n" unless ref($zigzag->{external}) eq 'HASH';
+    die "Test6: internal zigzag should use MTF resolution 30\n"
+        unless ($zigzag->{internal}{resolution_minutes} // 0) == 30;
+    die "Test6: internal zigzag should use period 2\n"
+        unless ($zigzag->{internal}{period} // 0) == 2;
+    die "Test6: external zigzag should use deviation_pct 1\n"
+        unless ($zigzag->{external}{deviation_pct} // 0) == 1;
+    die "Test6: external should have fewer pivots than internal\n"
+        unless ($zigzag->{external}{pivot_count} // 0) < ($zigzag->{internal}{pivot_count} // 0);
 
     print "OK Test6 zigzag hierarchy: internal=@{[scalar @{ $res->{internal_swings} }]} external=@{[scalar @{ $res->{external_swings} }]}\n";
 }

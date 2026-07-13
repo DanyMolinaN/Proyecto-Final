@@ -8,6 +8,8 @@ use File::Spec;
 use lib File::Spec->catdir(dirname(__FILE__), '..', '..');
 
 use Market::Indicators::Liquidity;
+use Market::Indicators::ZigZagMTF;
+use Market::Indicators::ZigZagVolumeProfile;
 use Market::Structure::BOSDetector;
 use Market::Structure::CHOCHDetector;
 
@@ -17,6 +19,16 @@ sub new {
         liquidity => $args{liquidity} || Market::Indicators::Liquidity->new(),
         bos_detector => $args{bos_detector} || Market::Structure::BOSDetector->new(),
         choch_detector => $args{choch_detector} || Market::Structure::CHOCHDetector->new(),
+        zigzag_internal => $args{zigzag_internal}
+            || Market::Indicators::ZigZagMTF->new(
+            resolution_minutes => Market::Indicators::ZigZagMTF::DEFAULT_RESOLUTION_MINUTES(),
+            period             => Market::Indicators::ZigZagMTF::DEFAULT_PERIOD(),
+            ),
+        zigzag_external => $args{zigzag_external}
+            || Market::Indicators::ZigZagVolumeProfile->new(
+            deviation_pct => Market::Indicators::ZigZagVolumeProfile::DEFAULT_DEVIATION_PCT(),
+            ),
+        _zigzag_synced_to => -1,
         swings => [],
         internal_swings => [],
         external_swings => [],
@@ -39,6 +51,9 @@ sub reset {
     $self->{breaks} = [];
     $self->{changes} = [];
     $self->{metadata} = {};
+    $self->{_zigzag_synced_to} = -1;
+    $self->{zigzag_internal}->reset() if $self->{zigzag_internal};
+    $self->{zigzag_external}->reset() if $self->{zigzag_external};
     $self->{liquidity}->reset() if $self->{liquidity} && $self->{liquidity}->can('reset');
     $self->{bos_detector}->reset() if $self->{bos_detector} && $self->{bos_detector}->can('reset');
     $self->{choch_detector}->reset() if $self->{choch_detector} && $self->{choch_detector}->can('reset');
@@ -73,57 +88,12 @@ sub calculate {
     }
 
     my $raw_source_swings = $liquidity_result->{swings} || [];
-    my $candidates = $self->_swing_candidates($raw_source_swings);
-    my $internal_source_swings = $self->_build_zigzag($candidates, $candles, $tol, profile => 'internal');
-    my $external_source_swings = $self->_build_zigzag($candidates, $candles, $tol, profile => 'external');
-
-    my $internal_swings = $self->_classify_zigzag_swings($internal_source_swings, $visible_limit, $tol, 'internal');
-    my $external_swings = $self->_classify_zigzag_swings($external_source_swings, $visible_limit, $tol, 'external');
-
-    $self->_assign_swing_scopes($external_swings);
-    $self->_reclassify_vs_external($external_swings, $tol);
-    $self->_assign_swing_scopes($external_swings);
-    for my $s (@$external_swings) { $s->{scope} = 'external'; }
-    for my $s (@$internal_swings) { $s->{scope} = 'internal'; }
-
-    # Runtime contract: public swings are the validated external structure.
-    # Microstructure remains available only through internal_swings.
-    $self->{swings} = $external_swings;
-    $self->{internal_swings} = $internal_swings;
-    $self->{external_swings} = $external_swings;
-    $self->{trend}  = $self->_derive_trend($external_swings);
-
-    my $break_seq = $self->_scan_structure_breaks($external_swings, $candles, $last_index, scope => 'external');
-    my $micro_break_seq = $self->_scan_structure_breaks($internal_swings, $candles, $last_index, scope => 'internal');
-    push @$break_seq, grep { ($_->{kind} || '') eq 'CHoCH' } @$micro_break_seq;
-    $self->{breaks}  = $self->{bos_detector}->detect($break_seq);
-    $self->{changes} = $self->{choch_detector}->detect($break_seq);
-
-    $self->{metadata} = {
+    $self->_sync_zigzag_engines( $market_data, $last_index );
+    return $self->_finalize_structure_from_zigzag(
+        $candles, $last_index, $visible_limit, $tol,
         timeframe       => $args{timeframe} || $market_data->active_tf(),
         raw_swing_count => scalar(@$raw_source_swings),
-        candidate_count => scalar(@$candidates),
-        internal_count  => scalar(@$internal_swings),
-        swing_count     => scalar(@$external_swings),
-        external_count  => scalar(@$external_swings),
-        visible_limit   => $visible_limit,
-        bos_count       => scalar(@{ $self->{breaks} }),
-        choch_count     => scalar(@{ $self->{changes} }),
-        tolerance       => $tol,
-        structural_filter => $self->{_structural_filter_metadata} || {},
-        zigzag          => $self->{_zigzag_metadata} || {},
-        show_internal   => 0,
-    };
-
-    return {
-        swings   => $self->{swings},
-        internal_swings => $self->{internal_swings},
-        external_swings => $self->{external_swings},
-        trend    => $self->{trend},
-        breaks   => $self->{breaks},
-        changes  => $self->{changes},
-        metadata => $self->{metadata},
-    };
+    );
 }
 
 # _scan_structure_breaks($swings, $candles, $last_index) -> \@events
@@ -214,10 +184,54 @@ sub structure {
 }
 sub events { my ($self) = @_; return [ @{ $self->{breaks} }, @{ $self->{changes} } ]; }
 
+# refresh_zigzag_structure($market_data, %args)
+# Actualiza ZigZag incrementalmente hasta el indice actual (replay o live)
+# y reconstruye swings/BOS/CHoCH sin recalcular Liquidity.
+sub refresh_zigzag_structure {
+    my ( $self, $market_data, %args ) = @_;
+    return {} unless $market_data;
+
+    my $replay_controller = $args{replay_controller};
+    my $liquidity_result  = $args{liquidity_result};
+    my $total = $market_data->size();
+    my $visible_limit = defined $replay_controller && $replay_controller->can('visible_limit')
+        ? $replay_controller->visible_limit($total)
+        : undef;
+    my $last_index = ( defined $visible_limit && $visible_limit >= 0 && $visible_limit < $total )
+        ? $visible_limit
+        : ( $total - 1 );
+    $last_index = 0 if $last_index < 0;
+
+    my $candles = [];
+    for ( my $i = 0 ; $i <= $last_index ; $i++ ) {
+        my $c = $market_data->get_candle($i);
+        push @$candles, $c if $c;
+    }
+
+    my $tol = 1e-6;
+    if ( $liquidity_result
+        && $liquidity_result->{metadata}
+        && defined $liquidity_result->{metadata}{tolerance} )
+    {
+        $tol = $liquidity_result->{metadata}{tolerance};
+    }
+    elsif ( $self->{metadata} && defined $self->{metadata}{tolerance} ) {
+        $tol = $self->{metadata}{tolerance};
+    }
+
+    $self->_sync_zigzag_engines( $market_data, $last_index );
+    return $self->_finalize_structure_from_zigzag(
+        $candles, $last_index, $visible_limit, $tol,
+        timeframe => $args{timeframe} || $market_data->active_tf(),
+        raw_swing_count => $liquidity_result
+        ? scalar( @{ $liquidity_result->{swings} || [] } )
+        : ( $self->{metadata}{raw_swing_count} // 0 ),
+    );
+}
+
 sub _filter_structural_swings {
     my ($self, $source_swings, $candles, $tol) = @_;
-    my $candidates = $self->_swing_candidates($source_swings);
-    return $self->_build_zigzag($candidates, $candles, $tol, profile => 'external');
+    return $self->_build_zigzag_from_engine( $tol, profile => 'external' );
 }
 
 sub _swing_candidates {
@@ -235,50 +249,68 @@ sub _swing_candidates {
     ];
 }
 
-sub _build_zigzag {
-    my ($self, $source_swings, $candles, $tol, %args) = @_;
+sub _sync_zigzag_engines {
+    my ( $self, $market_data, $target_index ) = @_;
+    return unless $market_data && defined $target_index && $target_index >= 0;
+
+    if ( defined $self->{_zigzag_synced_to}
+        && $self->{_zigzag_synced_to} > $target_index )
+    {
+        $self->{zigzag_internal}->reset() if $self->{zigzag_internal};
+        $self->{zigzag_external}->reset() if $self->{zigzag_external};
+        $self->{_zigzag_synced_to} = -1;
+    }
+
+    my $from = ( $self->{_zigzag_synced_to} // -1 ) + 1;
+    $from = 0 if $from < 0;
+
+    for my $i ( $from .. $target_index ) {
+        my $c = $market_data->get_candle($i);
+        next unless $c;
+        $self->{zigzag_internal}->update_at_index( $market_data, $i )
+            if $self->{zigzag_internal};
+        $self->{zigzag_external}->update_at_index( $market_data, $i )
+            if $self->{zigzag_external};
+    }
+
+    $self->{_zigzag_synced_to} = $target_index;
+
+    $self->{_zigzag_tentative} = {
+        internal => $self->{zigzag_internal}
+            ? $self->{zigzag_internal}->get_tentative_segment()
+            : undef,
+        external => $self->{zigzag_external}
+            ? $self->{zigzag_external}->get_tentative_segment()
+            : undef,
+    };
+    return $self;
+}
+
+sub _zigzag_engine_for {
+    my ( $self, $profile ) = @_;
+    return $profile eq 'internal'
+        ? $self->{zigzag_internal}
+        : $self->{zigzag_external};
+}
+
+sub _build_zigzag_from_engine {
+    my ( $self, $tol, %args ) = @_;
     my $profile = $args{profile} || 'external';
     $self->{_structural_filter_metadata} = {};
     $self->{_zigzag_metadata} ||= {};
-    return [] unless $source_swings && ref $source_swings eq 'ARRAY' && @$source_swings;
 
-    my @candidates = @$source_swings;
-    return \@candidates if @candidates < 3;
+    my $engine = $self->_zigzag_engine_for($profile);
+    return [] unless $engine;
 
-    my @alternating = _collapse_same_side_swings(@candidates);
-    return \@alternating if @alternating < 8;
+    my $source_swings = $engine->can('pivots_as_swings')
+        ? $engine->pivots_as_swings()
+        : [];
+    return [] unless $source_swings && @$source_swings;
 
-    my @prominences = grep { defined $_ && $_ > 0 }
-        map { _pivot_prominence(\@alternating, $_) }
-        0 .. $#alternating;
-
-    my $min_prominence = $profile eq 'internal'
-        ? _lower_quartile(@prominences)
-        : _median(@prominences);
-    $min_prominence = $tol if defined $tol && $tol > $min_prominence;
-
-    my @filtered;
-    for my $i (0 .. $#alternating) {
-        my $s = $alternating[$i];
-        my $prominence = _pivot_prominence(\@alternating, $i);
-        my $candidate = {
-            %$s,
-            prominence => $prominence,
-        };
-
-        if ($i == 0 || $i == $#alternating) {
-            push @filtered, $candidate;
-            next;
-        }
-
-        push @filtered, $candidate
-            if defined $prominence && $prominence >= $min_prominence;
-    }
-
-    @filtered = _collapse_same_side_swings(@filtered);
-    @filtered = @alternating if @filtered < 2;
+    my @filtered = map { +{%$_} } @$source_swings;
     for my $i (0 .. $#filtered) {
         my $s = $filtered[$i];
+        $s->{prominence} = _pivot_prominence(\@filtered, $i);
         $s->{distance} = _adjacent_distance(\@filtered, $i);
         $s->{depth} = _swing_depth(\@filtered, $i);
         $s->{structurally_confirmed} = ($i > 0 && $i < $#filtered) ? 1 : 0;
@@ -296,22 +328,106 @@ sub _build_zigzag {
         );
     }
 
-    my $metadata = {
-        candidates       => scalar(@candidates),
-        alternating      => scalar(@alternating),
-        structural       => scalar(@filtered),
-        min_prominence   => $min_prominence,
-        intermediate_prominence => $hierarchy_thresholds{intermediate},
-        major_prominence        => $hierarchy_thresholds{major},
-        prominence_model => $profile eq 'internal'
-            ? 'lower_quartile_adjacent_opposite_swings'
-            : 'median_adjacent_opposite_swings',
-        tolerance_floor  => $tol,
-    };
+    my $metadata;
+    if ( $profile eq 'internal' && $engine->isa('Market::Indicators::ZigZagMTF') ) {
+        $metadata = {
+            algorithm            => 'zzmtf_pivothigh_pivotlow',
+            resolution_minutes   => $engine->{resolution_minutes}
+                // Market::Indicators::ZigZagMTF::DEFAULT_RESOLUTION_MINUTES(),
+            period               => $engine->{period}
+                // Market::Indicators::ZigZagMTF::DEFAULT_PERIOD(),
+            pivot_count          => scalar(@filtered),
+            intermediate_prominence => $hierarchy_thresholds{intermediate},
+            major_prominence        => $hierarchy_thresholds{major},
+            tolerance_floor      => $tol,
+        };
+    }
+    elsif ( $profile eq 'external' && $engine->isa('Market::Indicators::ZigZagVolumeProfile') ) {
+        $metadata = {
+            algorithm            => 'zzvp_deviation_fsm',
+            deviation_pct        => $engine->{deviation_pct}
+                // Market::Indicators::ZigZagVolumeProfile::DEFAULT_DEVIATION_PCT(),
+            pivot_count          => scalar(@filtered),
+            intermediate_prominence => $hierarchy_thresholds{intermediate},
+            major_prominence        => $hierarchy_thresholds{major},
+            tolerance_floor      => $tol,
+        };
+    }
+    else {
+        $metadata = {
+            algorithm            => 'zigzag_engine',
+            pivot_count          => scalar(@filtered),
+            intermediate_prominence => $hierarchy_thresholds{intermediate},
+            major_prominence        => $hierarchy_thresholds{major},
+            tolerance_floor      => $tol,
+        };
+    }
     $self->{_zigzag_metadata}{$profile} = $metadata;
     $self->{_structural_filter_metadata} = $metadata if $profile eq 'external';
 
     return \@filtered;
+}
+
+sub _finalize_structure_from_zigzag {
+    my ( $self, $candles, $last_index, $visible_limit, $tol, %meta ) = @_;
+
+    my $internal_source_swings = $self->_build_zigzag_from_engine( $tol, profile => 'internal' );
+    my $external_source_swings = $self->_build_zigzag_from_engine( $tol, profile => 'external' );
+
+    my $internal_swings = $self->_classify_zigzag_swings(
+        $internal_source_swings, $visible_limit, $tol, 'internal'
+    );
+    my $external_swings = $self->_classify_zigzag_swings(
+        $external_source_swings, $visible_limit, $tol, 'external'
+    );
+
+    $self->_assign_swing_scopes($external_swings);
+    $self->_reclassify_vs_external( $external_swings, $tol );
+    $self->_assign_swing_scopes($external_swings);
+    for my $s (@$external_swings) { $s->{scope} = 'external'; }
+    for my $s (@$internal_swings) { $s->{scope} = 'internal'; }
+
+    $self->{swings}          = $external_swings;
+    $self->{internal_swings} = $internal_swings;
+    $self->{external_swings} = $external_swings;
+    $self->{trend}           = $self->_derive_trend($external_swings);
+
+    my $break_seq = $self->_scan_structure_breaks(
+        $external_swings, $candles, $last_index, scope => 'external'
+    );
+    my $micro_break_seq = $self->_scan_structure_breaks(
+        $internal_swings, $candles, $last_index, scope => 'internal'
+    );
+    push @$break_seq, grep { ( $_->{kind} || '' ) eq 'CHoCH' } @$micro_break_seq;
+    $self->{breaks}  = $self->{bos_detector}->detect($break_seq);
+    $self->{changes} = $self->{choch_detector}->detect($break_seq);
+
+    $self->{metadata} = {
+        timeframe       => $meta{timeframe} || 'unknown',
+        raw_swing_count => $meta{raw_swing_count} // 0,
+        candidate_count => $meta{raw_swing_count} // 0,
+        internal_count  => scalar(@$internal_swings),
+        swing_count     => scalar(@$external_swings),
+        external_count  => scalar(@$external_swings),
+        visible_limit   => $visible_limit,
+        bos_count       => scalar( @{ $self->{breaks} } ),
+        choch_count     => scalar( @{ $self->{changes} } ),
+        tolerance       => $tol,
+        structural_filter => $self->{_structural_filter_metadata} || {},
+        zigzag          => $self->{_zigzag_metadata} || {},
+        zigzag_tentative => $self->{_zigzag_tentative} || {},
+        show_internal   => 0,
+    };
+
+    return {
+        swings          => $self->{swings},
+        internal_swings => $self->{internal_swings},
+        external_swings => $self->{external_swings},
+        trend           => $self->{trend},
+        breaks          => $self->{breaks},
+        changes         => $self->{changes},
+        metadata        => $self->{metadata},
+    };
 }
 
 sub _classify_zigzag_swings {

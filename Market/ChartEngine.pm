@@ -177,6 +177,7 @@ sub new {
         _zoom_frame          => 0,
         _zoom_hud_after      => undef,
         _replay_after        => undef,
+        _replay_select_mode  => 0,
         wheel_event_counter  => 0,
         wheel_last_ts        => undef,
         wheel_last_event     => undef,
@@ -199,6 +200,7 @@ sub new {
     # Carga inicial de datos: construye la cache de analisis una sola vez, para
     # que el primer (y todos los) render() solo consuma resultados cacheados.
     $self->rebuild_analysis_cache();
+    $self->_replay_sync_controls();
     return $self;
 }
 
@@ -428,6 +430,10 @@ sub _bind_all_canvas {
     $canvas->Tk::bind('<Button-1>' => sub {
         my $x = $canvas->XEvent->x;
         my $y = $canvas->XEvent->y;
+        if ($self->{_replay_select_mode}) {
+            $self->_replay_pick_from_canvas($x, $y);
+            return Tk::break;
+        }
         if ($self->_in_price_y_axis_strip($x, $y)) {
             $self->{y_axis_zoom_drag}   = 1;
             $self->{y_axis_zoom_target} = 'price';
@@ -610,6 +616,8 @@ sub bind_events {
     # ── Replay (spec: Inicio, Play, Pause, Step +/-, Fast Forward, Exit) ────────
     $mw->bind('<KeyPress-p>' => sub { $self->_replay_enter(); });
     $mw->bind('<KeyPress-P>' => sub { $self->_replay_enter(); });
+    $mw->bind('<KeyPress-s>' => sub { $self->_replay_select_start(); });
+    $mw->bind('<KeyPress-S>' => sub { $self->_replay_select_start(); });
     $mw->bind('<space>'      => sub { $self->_replay_toggle_play(); });
     $mw->bind('<KeyPress-bracketright>' => sub { $self->_replay_step_forward(); });
     $mw->bind('<KeyPress-bracketleft>'  => sub { $self->_replay_step_backward(); });
@@ -640,6 +648,7 @@ sub build_control_panel {
     )->pack(-side => 'left', -padx => 4);
 
     my @replay_btns = (
+        ['Seleccionar', sub { $self->_replay_select_start(); }],
         ['Inicio',  sub { $self->_replay_enter(); }],
         ['Play/Pausa', sub { $self->_replay_toggle_play(); }],
         ['<<',      sub { $self->_replay_step_backward(); }],
@@ -659,6 +668,46 @@ sub build_control_panel {
             -pady     => 2,
         )->pack(-side => 'left', -padx => 2, -pady => 2);
     }
+
+    # ── Scrubber de recorrido (estilo barra de Replay de TradingView) ──────────
+    # Permite saltar a cualquier punto del historico arrastrando el slider,
+    # en vez de solo poder avanzar/retroceder vela a vela.
+    $self->{_replay_scale} = $replay_frame->Scale(
+        -from               => 0,
+        -to                 => 1,
+        -orient             => 'horizontal',
+        -showvalue          => 0,
+        -length             => 220,
+        -sliderlength       => 14,
+        -width              => 10,
+        -background         => $bg,
+        -troughcolor        => '#2a2e39',
+        -foreground         => $fg,
+        -highlightthickness => 0,
+        -borderwidth        => 0,
+        -command            => sub { $self->_replay_seek_scale_changed(@_); },
+    )->pack(-side => 'left', -padx => 6, -pady => 2);
+    $self->{_replay_scale}->configure(-state => 'disabled');
+
+    # ── Selector de velocidad (0.25x .. 10x) ──────────────────────────────────
+    $self->{_replay_speed_var} = 1;
+    my @speeds = (0.25, 0.5, 1, 2, 3, 5, 10);
+    $self->{_replay_speed_buttons} = {};
+    for my $speed (@speeds) {
+        my $label = $speed < 1 ? sprintf('%.2fx', $speed) : sprintf('%gx', $speed);
+        my $btn = $replay_frame->Button(
+            -text             => $label,
+            -command          => sub { $self->_replay_set_speed($speed); },
+            -background       => $speed == 1 ? '#4d5f2b' : '#2a2e39',
+            -foreground       => $fg,
+            -activebackground => '#363a45',
+            -font             => 'Helvetica 8',
+            -padx             => 4,
+            -pady             => 2,
+        )->pack(-side => 'left', -padx => 1, -pady => 2);
+        $self->{_replay_speed_buttons}{$speed} = $btn;
+    }
+    $self->_replay_sync_controls();
 
     my $overlay_frame = $panel->Labelframe(
         -text      => ' Indicators ',
@@ -819,117 +868,356 @@ sub _replay_sync_viewport {
     my ($self) = @_;
     my $rc = $self->{replay_controller};
     return unless $rc && $rc->is_active() && $self->{market_data};
-    my $total = $self->{market_data}->size();
-    my $idx   = $rc->{current_index} // 0;
-    $self->{offset} = $total - 1 - $idx;
-    $self->{offset} = 0 if $self->{offset} < 0;
+    # El offset se maneja en el espacio "eff_total" que usa compute_window
+    # (eff_total = puntero_replay + 1), donde offset=0 == "el puntero de
+    # replay es la ultima vela visible" (igual que offset=0 fuera de replay
+    # significa "la ultima vela real es la ultima visible"). Antes se
+    # calculaba con el total REAL de velas, lo que desalineaba el anclaje
+    # respecto al puntero durante la reproduccion.
+    $self->{offset} = 0;
     return $self;
+}
+
+sub _replay_warn {
+    my ($self, $action, $err) = @_;
+    return unless defined $err && $err ne '';
+    chomp $err;
+    warn "[Replay][$action] $err\n";
+}
+
+sub _replay_debug_log {
+    my ($self, $action) = @_;
+    my $rc = $self->{replay_controller};
+    my $current = ($rc && defined $rc->{current_index}) ? $rc->{current_index} : 'undef';
+    my $playing = ($rc && $rc->{playing}) ? 1 : 0;
+    my $enabled = ($rc && $rc->{enabled}) ? 1 : 0;
+    warn "[Replay][$action] current_index=$current playing=$playing enabled=$enabled\n";
+}
+
+sub _replay_safe_sync_controls {
+    my ($self, $action) = @_;
+    local $@;
+    my $ok = eval {
+        $self->_replay_sync_controls();
+        $self->_replay_sync_speed_buttons();
+        1;
+    };
+    $self->_replay_warn("$action/sync_controls", $@) unless $ok;
+    return $self;
+}
+
+sub _replay_run_handler {
+    my ($self, $action, $code) = @_;
+    local $@;
+    my $ok = eval {
+        $code->();
+        1;
+    };
+    $self->_replay_warn($action, $@) unless $ok;
+    $self->_replay_safe_sync_controls($action);
+    $self->_replay_debug_log($action);
+    return $self;
+}
+
+# _refresh_structure_zigzag()
+# Actualiza ZigZag incrementalmente (sin Liquidity/FVG). Solo se invoca cuando
+# avanza el puntero de replay o al salir de replay — nunca en pan/zoom/render.
+sub _refresh_structure_zigzag {
+    my ($self) = @_;
+    return unless $self->{structure_engine} && $self->{market_data};
+
+    my %args = (
+        replay_controller => $self->{replay_controller},
+        timeframe         => $self->{active_tf} || $self->{market_data}->active_tf(),
+    );
+    if ( $self->{analysis_cache} && $self->{analysis_cache}{liquidity} ) {
+        $args{liquidity_result} = $self->{analysis_cache}{liquidity};
+    }
+
+    my $structure_data = $self->{structure_engine}->refresh_zigzag_structure(
+        $self->{market_data}, %args,
+    );
+    if ( $self->{analysis_cache} && $structure_data && ref $structure_data eq 'HASH' ) {
+        $self->{analysis_cache}{structure} = $structure_data;
+    }
+    return $structure_data;
 }
 
 sub _replay_apply {
     my ($self) = @_;
     $self->_replay_sync_viewport();
-    if ($self->{indicator_manager} && $self->{indicator_manager}->can('rebuild_all')) {
-        $self->{indicator_manager}->rebuild_all($self->{market_data});
-    }
-    $self->invalidate_analysis_cache();
-    $self->rebuild_analysis_cache();
-    $self->render();
+    $self->_refresh_structure_zigzag();
+    local $@;
+    my $ok = eval {
+        $self->render();
+        1;
+    };
+    $self->_replay_warn('apply', $@) unless $ok;
+    $self->_replay_safe_sync_controls('apply');
     return $self;
 }
 
-sub _replay_enter {
+sub _replay_index_from_canvas_x {
+    my ($self, $x, $y) = @_;
+    return undef unless $self->{market_data} && $self->{price_scale};
+    return undef if $self->_in_price_y_axis_strip($x, $y);
+    return undef if $self->_in_atr_y_axis_strip($x, $y);
+
+    my $idx = $self->{price_scale}->x_to_index($x);
+    return undef unless defined $idx;
+    my $total = $self->{market_data}->size();
+    return undef unless $total > 0;
+    $idx = 0 if $idx < 0;
+    $idx = $total - 1 if $idx >= $total;
+    return $idx;
+}
+
+sub _replay_sync_speed_buttons {
     my ($self) = @_;
+    my $buttons = $self->{_replay_speed_buttons};
+    return $self unless $buttons && ref($buttons) eq 'HASH';
+
+    my $rc = $self->{replay_controller};
+    my $current = $rc ? ($rc->{speed} || 1) : ($self->{_replay_speed_var} || 1);
+    for my $speed (keys %$buttons) {
+        my $btn = $buttons->{$speed};
+        next unless $btn;
+        my $active = abs(($speed + 0) - ($current + 0)) < 0.0001;
+        eval {
+            $btn->configure(
+                -background => $active ? '#4d5f2b' : '#2a2e39',
+                -relief     => $active ? 'sunken' : 'raised',
+            );
+        };
+    }
+    return $self;
+}
+
+sub _replay_start_at_index {
+    my ($self, $idx, $autoplay) = @_;
     return unless $self->{market_data} && $self->{replay_controller};
     my $total = $self->{market_data}->size();
     return unless $total > 0;
-
-    my $idx = $self->{crosshair_idx};
-    if (!defined $idx) {
-        my ($start, $end) = $self->compute_window();
-        $idx = $end;
-    }
+    $idx = 0 unless defined $idx;
+    $idx = 0 if $idx < 0;
     $idx = $total - 1 if $idx >= $total;
 
     $self->_cancel_replay_timer();
     $self->{replay_controller}->enter_replay($idx, $total);
+    $self->{_replay_select_mode} = 0;
+    if ($autoplay && $idx < $total - 1) {
+        $self->{replay_controller}->play();
+        $self->_replay_schedule_tick();
+    }
     $self->_replay_apply();
+    return $self;
+}
+
+sub _replay_select_start {
+    my ($self) = @_;
+    return $self->_replay_run_handler('select_start', sub {
+        $self->{_replay_select_mode} = 1;
+        $self->_cancel_replay_timer();
+        my $canvas = $self->{canvas};
+        eval { $canvas->configure(-cursor => 'crosshair') } if $canvas;
+    });
+}
+
+sub _replay_pick_from_canvas {
+    my ($self, $x, $y) = @_;
+    return $self->_replay_run_handler('pick_start', sub {
+        my $canvas = $self->{canvas};
+        eval { $canvas->configure(-cursor => '') } if $canvas;
+        my $idx = $self->_replay_index_from_canvas_x($x, $y);
+        return unless defined $idx;
+        $self->_replay_start_at_index($idx, 0);
+    });
+}
+
+sub _replay_enter {
+    my ($self) = @_;
+    return $self->_replay_run_handler('enter', sub {
+        return unless $self->{market_data} && $self->{replay_controller};
+        my $total = $self->{market_data}->size();
+        return unless $total > 0;
+
+        my $idx = $self->{crosshair_idx};
+        if (!defined $idx) {
+            my ($start, $end) = $self->compute_window();
+            $idx = $end;
+        }
+        $idx = $total - 1 if $idx >= $total;
+
+        $self->_replay_start_at_index($idx, 0);
+    });
 }
 
 sub _replay_exit {
     my ($self) = @_;
-    return unless $self->{replay_controller};
-    $self->_cancel_replay_timer();
-    $self->{replay_controller}->exit_replay();
-    $self->invalidate_analysis_cache();
-    $self->rebuild_analysis_cache();
-    $self->render();
+    return $self->_replay_run_handler('exit', sub {
+        return unless $self->{replay_controller};
+        $self->{_replay_select_mode} = 0;
+        eval { $self->{canvas}->configure(-cursor => '') } if $self->{canvas};
+        $self->_cancel_replay_timer();
+        $self->{replay_controller}->exit_replay();
+        $self->_refresh_structure_zigzag();
+        $self->render();
+    });
 }
 
 sub _replay_toggle_play {
     my ($self) = @_;
-    my $rc = $self->{replay_controller};
-    return unless $rc && $rc->is_active();
+    return $self->_replay_run_handler('toggle_play', sub {
+        my $rc = $self->{replay_controller};
+        return unless $rc && $rc->is_active();
 
-    if ($rc->{playing}) {
+        if ($rc->{playing}) {
+            $rc->pause();
+            $self->_cancel_replay_timer();
+            $self->render();
+            return;
+        }
+
+        my $total = $self->{market_data}->size();
+        return unless $total > 0;
+        return if $rc->{current_index} >= $total - 1;
+
+        $rc->play();
+        $self->_replay_apply();
+        $self->_replay_schedule_tick();
+    });
+}
+
+# _replay_set_speed($speed)
+# Cambia el multiplicador de reproduccion (0.25x .. 10x, estilo TradingView).
+# El siguiente tick programado en _replay_schedule_tick ya lee {speed} en vivo,
+# asi que el cambio se aplica de inmediato sin reiniciar el timer.
+sub _replay_set_speed {
+    my ($self, $speed) = @_;
+    return $self->_replay_run_handler('set_speed', sub {
+        return unless $self->{replay_controller};
+        $self->{_replay_speed_var} = $speed;
+        $self->{replay_controller}->set_speed($speed);
+        $self->_replay_sync_speed_buttons();
+        $self->render();
+    });
+}
+
+# _replay_seek_scale_changed($value)
+# Callback del slider de recorrido: permite saltar directo a cualquier vela
+# del historico (scrubbing), igual que la barra de Replay de TradingView.
+# Al arrastrar, se pausa automaticamente (si estaba en play) para no pelear
+# con el timer de auto-avance.
+sub _replay_seek_scale_changed {
+    my ($self, $val) = @_;
+    return if $self->{_replay_scale_updating};
+    return $self->_replay_run_handler('seek', sub {
+        my $rc = $self->{replay_controller};
+        return unless $rc && $rc->is_active() && $self->{market_data};
+        my $total = $self->{market_data}->size();
+        return unless $total > 0;
+
+        my $target = int($val + 0.5);
+        $target = 0 if $target < 0;
+        $target = $total - 1 if $target >= $total;
+        return if defined $rc->{current_index} && $target == $rc->{current_index};
+
         $rc->pause();
         $self->_cancel_replay_timer();
-        $self->render();
-        return;
+        $rc->seek($target, $total);
+        $self->_replay_apply();
+    });
+}
+
+# _replay_sync_controls()
+# Refleja el estado actual del ReplayController en el slider de recorrido:
+# rango habilitado/deshabilitado segun si el replay esta activo, y posicion
+# actualizada en cada tick/step/seek. Usa un flag de guarda para no disparar
+# _replay_seek_scale_changed de vuelta cuando el valor se fija programaticamente.
+sub _replay_sync_controls {
+    my ($self) = @_;
+    my $scale = $self->{_replay_scale};
+    return unless $scale;
+
+    my $rc    = $self->{replay_controller};
+    my $total = $self->{market_data} ? $self->{market_data}->size() : 0;
+
+    if ($rc && $rc->is_active() && $total > 0) {
+        $scale->configure(-state => 'normal', -from => 0, -to => $total - 1);
+        $self->{_replay_scale_updating} = 1;
+        local $@;
+        eval { $scale->set($rc->{current_index} // 0); };
+        $self->{_replay_scale_updating} = 0;
     }
-
-    my $total = $self->{market_data}->size();
-    return unless $total > 0;
-    return if $rc->{current_index} >= $total - 1;
-
-    $rc->play();
-    $self->_replay_schedule_tick();
+    else {
+        my $to = $total > 0 ? $total - 1 : 1;
+        $scale->configure(-state => 'disabled', -from => 0, -to => $to);
+        $self->{_replay_scale_updating} = 1;
+        local $@;
+        eval { $scale->set(0); };
+        $self->{_replay_scale_updating} = 0;
+    }
+    return $self;
 }
 
 sub _replay_step_forward {
     my ($self) = @_;
-    my $rc = $self->{replay_controller};
-    return unless $rc && $rc->is_active();
+    return $self->_replay_run_handler('step_forward', sub {
+        my $rc = $self->{replay_controller};
+        return unless $rc && $rc->is_active();
 
-    my $total = $self->{market_data}->size();
-    $rc->pause();
-    $self->_cancel_replay_timer();
-    $rc->step_forward($total);
-    $self->_replay_apply();
+        my $total = $self->{market_data}->size();
+        $rc->pause();
+        $self->_cancel_replay_timer();
+        $rc->step_forward($total);
+        $self->_replay_apply();
+    });
 }
 
 sub _replay_step_backward {
     my ($self) = @_;
-    my $rc = $self->{replay_controller};
-    return unless $rc && $rc->is_active();
+    return $self->_replay_run_handler('step_backward', sub {
+        my $rc = $self->{replay_controller};
+        return unless $rc && $rc->is_active();
 
-    $rc->pause();
-    $self->_cancel_replay_timer();
-    $rc->step_backward();
-    $self->_replay_apply();
+        $rc->pause();
+        $self->_cancel_replay_timer();
+        $rc->step_backward();
+        $self->_replay_apply();
+    });
 }
 
 sub _replay_fast_forward {
     my ($self) = @_;
-    my $rc = $self->{replay_controller};
-    return unless $rc && $rc->is_active();
+    return $self->_replay_run_handler('fast_forward', sub {
+        my $rc = $self->{replay_controller};
+        return unless $rc && $rc->is_active();
 
-    my $total = $self->{market_data}->size();
-    $rc->pause();
-    $self->_cancel_replay_timer();
-    $rc->fast_forward(10, $total);
-    $self->_replay_apply();
+        my $total = $self->{market_data}->size();
+        $rc->pause();
+        $self->_cancel_replay_timer();
+        $rc->fast_forward(10, $total);
+        $self->_replay_apply();
+    });
 }
 
 sub _replay_schedule_tick {
     my ($self) = @_;
     my $rc = $self->{replay_controller};
     return unless $rc && $rc->{playing} && $self->{canvas};
+    $self->_cancel_replay_timer();
 
     my $total = $self->{market_data}->size();
     if ($total <= 0 || $rc->{current_index} >= $total - 1) {
         $rc->stop();
-        $self->render();
+        local $@;
+        my $ok = eval {
+            $self->render();
+            1;
+        };
+        $self->_replay_warn('schedule_tick/render_stop', $@) unless $ok;
+        $self->_replay_safe_sync_controls('schedule_tick/render_stop');
+        $self->_replay_debug_log('schedule_tick/render_stop');
         return;
     }
 
@@ -938,19 +1226,22 @@ sub _replay_schedule_tick {
     $delay = 16 if $delay < 16;
 
     $self->{_replay_after} = $self->{canvas}->after($delay, sub {
-        my $r = $self->{replay_controller};
-        return unless $r && $r->{playing};
+        $self->{_replay_after} = undef;
+        $self->_replay_run_handler('tick', sub {
+            my $r = $self->{replay_controller};
+            return unless $r && $r->{playing};
 
-        my $n = $self->{market_data}->size();
-        if ($n <= 0 || $r->{current_index} >= $n - 1) {
-            $r->stop();
-            $self->render();
-            return;
-        }
+            my $n = $self->{market_data}->size();
+            if ($n <= 0 || $r->{current_index} >= $n - 1) {
+                $r->stop();
+                $self->render();
+                return;
+            }
 
-        $r->step_forward($n);
-        $self->_replay_apply();
-        $self->_replay_schedule_tick();
+            $r->step_forward($n);
+            $self->_replay_apply();
+            $self->_replay_schedule_tick();
+        });
     });
 }
 
@@ -1399,38 +1690,43 @@ sub compute_window {
     my $visible = $self->_normalized_visible_bars();
     # NO se acota $visible a $total: zoom-out "mas alla de la data" (TradingView).
 
-    my ($min_offset, $max_offset) = $self->_horizontal_offset_limits($visible, $total);
-    $self->_enforce_horizontal_offset($visible, $total);
+    # Durante replay, TODO el calculo de offset/limites/anclaje debe operar
+    # sobre el universo "visible hasta el puntero" (eff_total), no sobre el
+    # total real de velas. Antes se calculaba con $total y solo se recortaba
+    # $data_end al limite de replay al final: eso dejaba a `offset` y a
+    # `_clamp_x_shift_horizontal` razonando sobre un extremo "futuro" que no
+    # es real (el ultimo dato del dataset) en lugar del extremo del replay
+    # (el indice actual del puntero). El sintoma visible era el desanclaje /
+    # corrimiento de las velas al reproducir cerca del inicio de la data o al
+    # acercarse al puntero de replay.
+    my $replay_limit;
+    if ($self->{replay_controller} && $self->{replay_controller}->can('visible_limit')
+        && $self->{replay_controller}->{enabled})
+    {
+        $replay_limit = $self->{replay_controller}->visible_limit($total);
+    }
+    my $eff_total = (defined $replay_limit) ? ($replay_limit + 1) : $total;
+    $eff_total = 1 if $eff_total < 1;
 
-    # end_visual puede superar total-1: esos "slots" sobrantes son el whitespace.
-    my $end_visual = $total - 1 - $self->{offset};
+    my ($min_offset, $max_offset) = $self->_horizontal_offset_limits($visible, $eff_total);
+    $self->_enforce_horizontal_offset($visible, $eff_total);
+
+    # end_visual puede superar eff_total-1: esos "slots" sobrantes son el
+    # whitespace (a la derecha del puntero de replay, o del ultimo dato real).
+    my $end_visual = $eff_total - 1 - $self->{offset};
     my $start      = $end_visual - $visible + 1;
 
     $self->{view_start} = $start;
 
-    my $data_start = $start;      $data_start = 0          if $data_start < 0;
-    my $data_end   = $end_visual; $data_end   = $total - 1 if $data_end > $total - 1;
+    my $data_start = $start;      $data_start = 0            if $data_start < 0;
+    my $data_end   = $end_visual; $data_end   = $eff_total - 1 if $data_end > $eff_total - 1;
     $data_end = 0 if $data_end < 0;
-
-    # Replay: nunca exponer velas futuras al puntero (spec 3).
-    if ($self->{replay_controller} && $self->{replay_controller}->can('visible_limit')
-        && $self->{replay_controller}->{enabled})
-    {
-        my $limit = $self->{replay_controller}->visible_limit($total);
-        if (defined $limit && $data_end > $limit) {
-            $data_end = $limit;
-            if ($data_start > $data_end) {
-                $data_start = $data_end - $visible + 1;
-                $data_start = 0 if $data_start < 0;
-            }
-        }
-    }
 
     $self->{visible_bars} = $data_end - $data_start + 1;
     $self->{start_idx}    = $data_start;
     $self->{end_idx}      = $data_end;
 
-    $self->_clamp_x_shift_horizontal($visible, $total, $min_offset, $max_offset);
+    $self->_clamp_x_shift_horizontal($visible, $eff_total, $min_offset, $max_offset);
     $self->_sync_infra_state();
 
     return ($data_start, $data_end);
@@ -2086,7 +2382,8 @@ sub _draw_hud {
         my $pos = ($rc->{current_index} // 0) + 1;
         my $tot = $self->{market_data} ? $self->{market_data}->size() : 0;
         my $st  = $rc->{playing} ? 'PLAY' : 'PAUSE';
-        $replay_line = sprintf('REPLAY %s  %d/%d', $st, $pos, $tot);
+        my $spd = $rc->{speed} || 1;
+        $replay_line = sprintf('REPLAY %s %sx  %d/%d', $st, $spd, $pos, $tot);
         $hud_h += 16;
     }
 
@@ -2858,6 +3155,7 @@ sub set_timeframe {
     $self->_load_tf_viewport($tf);
     $self->_sync_infra_state();
     $self->render();
+    $self->_replay_sync_controls();
 }
 
 sub reset_view {

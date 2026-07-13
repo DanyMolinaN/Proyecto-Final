@@ -88,7 +88,7 @@ $indicator_manager->register('atr', $atr_indicator);
 #==================
 
 my $project_root = $Bin;
-my $csv_file = File::Spec->catfile($project_root, 'data', '2026_06_29.csv');
+my $csv_file = File::Spec->catfile($project_root, 'data', '2026_07_06.csv');
 unless (-e $csv_file) {
     my $data_dir = File::Spec->catdir($project_root, 'data');
     opendir my $dh, $data_dir or die "No se pudo abrir el directorio data: $!";
