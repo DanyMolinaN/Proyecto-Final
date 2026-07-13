@@ -31,6 +31,11 @@ sub draw {
     my $clip_y_bottom = $args{clip_y_bottom};
     return unless $canvas && $scale && $data && ref($data) eq 'HASH';
 
+    my $settings = $args{settings} || $self->{settings};
+    if ($settings && $settings->can('enabled')) {
+        return $self unless $settings->enabled('show_volume_profile');
+    }
+
     $self->clear($canvas);
 
     my $distribution = $data->{distribution} || {};

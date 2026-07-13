@@ -32,6 +32,11 @@ sub draw {
     return unless $canvas && $scale;
     return unless $data;
 
+    my $settings = $args{settings} || $self->{settings};
+    if ($settings && $settings->can('enabled')) {
+        return $self unless $settings->enabled('show_orderblocks');
+    }
+
     $self->clear($canvas);
     my $blocks = $data->{blocks} || [];
     return $self unless ref($blocks) eq 'ARRAY';

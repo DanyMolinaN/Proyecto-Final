@@ -8,6 +8,9 @@ use Market::Core::OverlaySettings;
 use Market::Overlays::StructureOverlay;
 use Market::Overlays::LiquidityOverlay;
 use Market::Overlays::FVGOverlay;
+use Market::Overlays::OrderBlockOverlay;
+use Market::Overlays::VolumeProfileOverlay;
+use Market::Overlays::AnchoredVWAPOverlay;
 
 {
     package _Canvas;
@@ -23,13 +26,13 @@ use Market::Overlays::FVGOverlay;
 
 {
     package _Scale;
-    sub new { bless { candle_width => 8, width => 900, y_axis_strip_w => 66 }, shift }
+    sub new { bless { candle_width => 8, width => 900, y_axis_strip_w => 66, start_index => 0 }, shift }
     sub index_to_center_x { my ($s, $i) = @_; return 10 + $i * 8; }
     sub index_to_x { my ($s, $i) = @_; return 6 + $i * 8; }
     sub value_to_y { my ($s, $v) = @_; return 300 - $v; }
 }
 
-my $settings_file = File::Spec->catfile('/tmp', 'overlay_settings_verify.conf');
+my $settings_file = File::Spec->catfile(File::Spec->tmpdir(), 'overlay_settings_verify.conf');
 unlink $settings_file if -e $settings_file;
 my $settings = Market::Core::OverlaySettings->new(file => $settings_file);
 
@@ -112,6 +115,48 @@ $fvg->draw(canvas => $canvas, scale => $scale, data => {
     gaps => [ { created_index => 1, extend_to => 5, type => 'bullish', top => 120, bottom => 110 } ],
 }, start_idx => 0, end_idx => 10);
 die "FVG rendered while disabled\n" if $canvas->count;
+
+my $ob = Market::Overlays::OrderBlockOverlay->new(canvas => $canvas, scale => $scale, settings => $loaded);
+$loaded->set('show_orderblocks', 0);
+$ob->draw(canvas => $canvas, scale => $scale, data => {
+    blocks => [ { created_index => 1, price => 115, type => 'bullish' } ],
+}, start_idx => 0, end_idx => 10);
+die "OrderBlock rendered while disabled\n" if $canvas->count;
+$loaded->set('show_orderblocks', 1);
+$ob->draw(canvas => $canvas, scale => $scale, data => {
+    blocks => [ { created_index => 1, price => 115, type => 'bullish' } ],
+}, start_idx => 0, end_idx => 10);
+die "OrderBlock did not render when enabled\n" unless $canvas->count;
+
+$canvas->delete();
+my $vwap = Market::Overlays::AnchoredVWAPOverlay->new(canvas => $canvas, scale => $scale, settings => $loaded);
+$loaded->set('show_anchored_vwap', 0);
+$vwap->draw(canvas => $canvas, scale => $scale, data => {
+    vwap => 100, anchor_index => 1,
+}, start_idx => 0, end_idx => 10);
+die "AnchoredVWAP rendered while disabled\n" if $canvas->count;
+$loaded->set('show_anchored_vwap', 1);
+$vwap->draw(canvas => $canvas, scale => $scale, data => {
+    vwap => 100, anchor_index => 1,
+}, start_idx => 0, end_idx => 10);
+die "AnchoredVWAP did not render when enabled\n" unless $canvas->count;
+
+$canvas->delete();
+my $vp = Market::Overlays::VolumeProfileOverlay->new(canvas => $canvas, scale => $scale, settings => $loaded);
+$loaded->set('show_volume_profile', 0);
+$vp->draw(canvas => $canvas, scale => $scale, data => {
+    distribution => {
+        sorted_bins => [ { price => 100, volume => 100 } ]
+    }
+}, start_idx => 0, end_idx => 10);
+die "VolumeProfile rendered while disabled\n" if $canvas->count;
+$loaded->set('show_volume_profile', 1);
+$vp->draw(canvas => $canvas, scale => $scale, data => {
+    distribution => {
+        sorted_bins => [ { price => 100, volume => 100 } ]
+    }
+}, start_idx => 0, end_idx => 10);
+die "VolumeProfile did not render when enabled\n" unless $canvas->count;
 
 unlink $settings_file if -e $settings_file;
 print "OK overlay options verification\n";

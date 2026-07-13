@@ -37,6 +37,14 @@ use Market::Concepts::FVGEngine;
 use Market::Overlays::LiquidityOverlay;
 use Market::Overlays::StructureOverlay;
 use Market::Overlays::FVGOverlay;
+use Market::Overlays::OrderBlockOverlay;
+use Market::Overlays::VolumeProfileOverlay;
+use Market::Overlays::AnchoredVWAPOverlay;
+use Market::Concepts::OrderBlockEngine;
+use Market::Volume::VolumeProfileEngine;
+use Market::Volume::AnchoredVWAP;
+use Market::Indicators::ZigZagMTF;
+use Market::Indicators::ZigZagVolumeProfile;
 
 sub new {
     my ($class, %args) = @_;
@@ -97,6 +105,10 @@ sub new {
         liquidity => $liquidity_engine,
     );
     my $fvg_engine = $args{fvg_engine} || Market::Concepts::FVGEngine->new();
+    my $orderblock_engine = $args{orderblock_engine} || Market::Concepts::OrderBlockEngine->new();
+    my $volume_profile_engine = $args{volume_profile_engine} || Market::Volume::VolumeProfileEngine->new();
+    my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
+
     my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
     my $liquidity_overlay = Market::Overlays::LiquidityOverlay->new(
@@ -106,6 +118,15 @@ sub new {
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
     my $fvg_overlay = Market::Overlays::FVGOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $orderblock_overlay = Market::Overlays::OrderBlockOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $volume_profile_overlay = Market::Overlays::VolumeProfileOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $anchored_vwap_overlay = Market::Overlays::AnchoredVWAPOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
 
@@ -126,9 +147,15 @@ sub new {
         liquidity_engine     => $liquidity_engine,
         structure_engine     => $structure_engine,
         fvg_engine           => $fvg_engine,
+        orderblock_engine    => $orderblock_engine,
+        volume_profile_engine => $volume_profile_engine,
+        anchored_vwap        => $anchored_vwap,
         liquidity_overlay    => $liquidity_overlay,
         structure_overlay    => $structure_overlay,
         fvg_overlay          => $fvg_overlay,
+        orderblock_overlay   => $orderblock_overlay,
+        volume_profile_overlay => $volume_profile_overlay,
+        anchored_vwap_overlay => $anchored_vwap_overlay,
         width                => $width,
         height               => $height,
         price_height         => $price_height,
@@ -840,8 +867,19 @@ sub _sync_overlay_layer_state {
         || $s->enabled('show_sweeps') || $s->enabled('show_grabs') || $s->enabled('show_runs');
 
     my $fvg_on = $s->enabled('show_fvg');
+    
+    my $orderblock_on = $s->enabled('show_orderblocks');
+    my $volume_profile_on = $s->enabled('show_volume_profile');
+    my $anchored_vwap_on = $s->enabled('show_anchored_vwap');
 
-    for my $pair ([structure => $structure_on], [liquidity => $liquidity_on], [fvg => $fvg_on]) {
+    for my $pair (
+        [structure => $structure_on], 
+        [liquidity => $liquidity_on], 
+        [fvg => $fvg_on],
+        [orderblock => $orderblock_on],
+        [volume_profile => $volume_profile_on],
+        [anchored_vwap => $anchored_vwap_on]
+    ) {
         my ($name, $on) = @$pair;
         if ($on) {
             $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
@@ -2073,9 +2111,12 @@ sub _register_overlays {
     return unless $self->{overlay_manager} && $self->{overlay_manager}->can('register');
 
     my @overlays = (
-        [liquidity => $self->{liquidity_overlay}],
-        [fvg       => $self->{fvg_overlay}],
-        [structure => $self->{structure_overlay}],
+        [liquidity       => $self->{liquidity_overlay}],
+        [fvg             => $self->{fvg_overlay}],
+        [structure       => $self->{structure_overlay}],
+        [orderblock      => $self->{orderblock_overlay}],
+        [volume_profile  => $self->{volume_profile_overlay}],
+        [anchored_vwap   => $self->{anchored_vwap_overlay}],
     );
 
     for my $entry (@overlays) {
@@ -2097,7 +2138,7 @@ sub _register_overlays {
 sub invalidate_analysis_cache {
     my ($self) = @_;
     $self->{analysis_cache} = undef;
-    for my $key (qw(liquidity_engine structure_engine fvg_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2129,7 +2170,7 @@ sub rebuild_analysis_cache {
         view_end          => $view_end,
     );
 
-    for my $key (qw(liquidity_engine structure_engine fvg_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2152,11 +2193,23 @@ sub rebuild_analysis_cache {
     my $fvg_data = $self->{fvg_engine}->calculate(
         $self->{market_data}, $self->{structure_engine}, %engine_args,
     );
+    my $orderblock_data = $self->{orderblock_engine}->calculate(
+        $self->{market_data}, $self->{structure_engine}, %engine_args,
+    );
+    my $volume_profile_data = $self->{volume_profile_engine}->calculate(
+        $self->{market_data}, %engine_args,
+    );
+    my $anchored_vwap_data = $self->{anchored_vwap}->calculate(
+        $self->{market_data}, %engine_args,
+    );
 
     $self->{analysis_cache} = {
-        liquidity => $liquidity_data,
-        structure => $structure_data,
-        fvg       => $fvg_data,
+        liquidity      => $liquidity_data,
+        structure      => $structure_data,
+        fvg            => $fvg_data,
+        orderblock     => $orderblock_data,
+        volume_profile => $volume_profile_data,
+        anchored_vwap  => $anchored_vwap_data,
     };
     return $self->{analysis_cache};
 }
@@ -2204,11 +2257,17 @@ sub _prepare_overlay_data {
     my $liquidity_data = $cache->{liquidity};
     my $structure_data = $cache->{structure};
     my $fvg_data       = $cache->{fvg};
+    my $orderblock_data = $cache->{orderblock};
+    my $volume_profile_data = $cache->{volume_profile};
+    my $anchored_vwap_data = $cache->{anchored_vwap};
 
     my $overlay_names = {
-        liquidity => $liquidity_data,
-        structure => $structure_data,
-        fvg       => $fvg_data,
+        liquidity      => $liquidity_data,
+        structure      => $structure_data,
+        fvg            => $fvg_data,
+        orderblock     => $orderblock_data,
+        volume_profile => $volume_profile_data,
+        anchored_vwap  => $anchored_vwap_data,
     };
 
     for my $name (keys %$overlay_names) {
