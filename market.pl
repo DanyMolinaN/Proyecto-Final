@@ -15,6 +15,8 @@ use lib $Bin;
 use Market::ChartEngine;
 use Market::IndicatorManager;
 use Market::Indicators::ATR;
+use Market::Indicators::ZigZagMTF;
+use Market::Indicators::ZigZagVolumeProfile;
 use Market::MarketData;
 
 #==================
@@ -82,6 +84,12 @@ my $market            = Market::MarketData->new();
 my $indicator_manager = Market::IndicatorManager->new();
 my $atr_indicator     = Market::Indicators::ATR->new(14);
 $indicator_manager->register('atr', $atr_indicator);
+
+my $zigzag_mtf = Market::Indicators::ZigZagMTF->new();
+$indicator_manager->register('zigzag_mtf', $zigzag_mtf);
+
+my $zigzag_vp = Market::Indicators::ZigZagVolumeProfile->new();
+$indicator_manager->register('zigzag_vp', $zigzag_vp);
 
 #==================
 # LOAD OHLC DATA FROM CSV

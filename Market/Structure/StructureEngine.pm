@@ -133,8 +133,7 @@ sub _scan_structure_breaks {
         next unless defined $close;
 
         if (defined $rh && defined $rhi && $rhi < $i && $close > $rh) {
-            my $kind = ($trend < 0 || $scope eq 'internal') ? 'CHoCH' : 'BOS';
-            next if $scope eq 'internal' && $trend >= 0;
+            my $kind = ($trend < 0) ? 'CHoCH' : 'BOS';
             push @events, {
                 event_id     => ++$id,
                 kind         => $kind,
@@ -150,8 +149,7 @@ sub _scan_structure_breaks {
             $rh = undef; $rhi = undef; $rh_hierarchy = undef;
         }
         elsif (defined $rl && defined $rli && $rli < $i && $close < $rl) {
-            my $kind = ($trend > 0 || $scope eq 'internal') ? 'CHoCH' : 'BOS';
-            next if $scope eq 'internal' && $trend <= 0;
+            my $kind = ($trend > 0) ? 'CHoCH' : 'BOS';
             push @events, {
                 event_id     => ++$id,
                 kind         => $kind,
@@ -398,7 +396,7 @@ sub _finalize_structure_from_zigzag {
     my $micro_break_seq = $self->_scan_structure_breaks(
         $internal_swings, $candles, $last_index, scope => 'internal'
     );
-    push @$break_seq, grep { ( $_->{kind} || '' ) eq 'CHoCH' } @$micro_break_seq;
+    push @$break_seq, @$micro_break_seq;
     $self->{breaks}  = $self->{bos_detector}->detect($break_seq);
     $self->{changes} = $self->{choch_detector}->detect($break_seq);
 

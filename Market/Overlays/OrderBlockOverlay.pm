@@ -32,6 +32,11 @@ sub draw {
     return unless $canvas && $scale;
     return unless $data;
 
+    my $settings = $args{settings} || $self->{settings};
+    if ($settings && $settings->can('enabled')) {
+        return $self unless $settings->enabled('show_orderblocks');
+    }
+
     $self->clear($canvas);
     my $blocks = $data->{blocks} || [];
     return $self unless ref($blocks) eq 'ARRAY';
@@ -43,6 +48,9 @@ sub draw {
 
     for my $block (@$blocks) {
         next unless $block && ref($block) eq 'HASH';
+        next if ($block->{state} || '') eq 'Invalidated';
+        next if ($block->{state} || '') eq 'Mitigated';
+
         my $idx = $block->{index} // $block->{created_index};
         my $price = $block->{price} // $block->{value};
         my $type = $block->{type};
@@ -61,16 +69,36 @@ sub draw {
 
         my $label = $type eq 'bullish' ? 'OB+' : $type eq 'bearish' ? 'OB-' : 'OB';
         my $fill = $type eq 'bearish' ? '#ff5252' : '#4caf50';
-        my $x = $scale->index_to_center_x($idx);
-        my $y = $scale->value_to_y($price);
 
-        $canvas->createLine($x - 6, $y, $x + 6, $y,
-            -fill => $fill, -width => 2, -tags => ['overlay_order_block']);
-        $canvas->createText($x, $y + 10,
+        my $cw = $scale->index_to_center_x(1) - $scale->index_to_center_x(0);
+        my $half = $cw > 0 ? $cw / 2 : 2;
+        my $x1 = $scale->index_to_center_x($idx) - $half;
+        
+        my $draw_end = $block->{invalidated_index} // $block->{mitigated_index} // $end_idx // ($idx + 50);
+        $draw_end = $end_idx if defined $end_idx && $draw_end > $end_idx;
+        my $x2 = $scale->index_to_center_x($draw_end) + $half;
+        $x2 = $x1 + ($half * 2) if $x2 <= $x1;
+        
+        my $high = $block->{high} // $price;
+        my $low  = $block->{low}  // $price;
+        my $y1 = $scale->value_to_y($high);
+        my $y2 = $scale->value_to_y($low);
+        ($y1, $y2) = ($y2, $y1) if $y1 > $y2;
+
+        $canvas->createRectangle($x1, $y1, $x2, $y2,
+            -fill    => $fill,
+            -stipple => 'gray12',
+            -outline => $fill,
+            -width   => 1,
+            -tags    => ['overlay_order_block'],
+        );
+
+        my $y_mid = ($y1 + $y2) / 2;
+        $canvas->createText($x1 + 4, $y_mid,
             -text   => $label,
-            -anchor => 'n',
+            -anchor => 'w',
             -fill   => $fill,
-            -font   => 'Helvetica 8 bold',
+            -font   => 'Helvetica 7 bold',
             -tags   => ['overlay_order_block'],
         );
         $rendered++;

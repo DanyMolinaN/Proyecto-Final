@@ -343,20 +343,26 @@ sub _draw_tag {
 
     my $pad_x = $style->{pad_x} || 3;
     my $pad_y = $style->{pad_y} || 1;
-    my $w = length($text) * ($style->{text_w} || 5) + $pad_x * 2;
+    my $text_w = length($text) * ($style->{text_w} || 5);
     my $h = ($style->{text_h} || 10) + $pad_y * 2;
     my $x = $item->{x_base};
     my $y = $item->{y_base};
     my $anchor = $item->{anchor} || 'c';
-    my $left = $anchor eq 'w' ? $x
-             : $anchor eq 'e' ? $x - $w
-             : $x - $w / 2;
-    my $right = $anchor eq 'w' ? $x + $w
-              : $anchor eq 'e' ? $x
-              : $x + $w / 2;
-    my $text_x = $anchor eq 'w' ? $left + $pad_x
-               : $anchor eq 'e' ? $right - $pad_x
-               : ($left + $right) / 2;
+
+    my ($left, $right);
+    if ($anchor eq 'w') {
+        $left  = $x - $pad_x;
+        $right = $x + $text_w + $pad_x;
+    }
+    elsif ($anchor eq 'e') {
+        $left  = $x - $text_w - $pad_x;
+        $right = $x + $pad_x;
+    }
+    else {
+        $left  = $x - $text_w / 2 - $pad_x;
+        $right = $x + $text_w / 2 + $pad_x;
+    }
+
     my $text_anchor = ($anchor eq 'w' || $anchor eq 'e') ? $anchor : 'c';
 
     $canvas->createRectangle(
@@ -366,7 +372,7 @@ sub _draw_tag {
         -width => 1,
         -tags => ['overlay_liquidity_dynamic'],
     );
-    $canvas->createText($text_x, $y,
+    $canvas->createText($x, $y,
         -text   => $text,
         -anchor => $text_anchor,
         -fill   => $item->{fill},

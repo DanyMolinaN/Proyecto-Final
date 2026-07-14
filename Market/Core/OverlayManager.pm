@@ -45,8 +45,7 @@ sub enable {
     my ($self, $name) = @_;
     return 0 unless defined $name && exists $self->{overlays}->{$name};
     my $overlay = $self->{overlays}->{$name};
-    $overlay->{enabled} = 1 if ref($overlay) && ref($overlay) eq 'HASH';
-    $overlay->{enabled} = 1 if ref($overlay) && ref($overlay) ne 'HASH';
+    $overlay->{enabled} = 1 if ref($overlay);   # cualquier referencia: objeto o hashref
     return 1;
 }
 
@@ -54,9 +53,8 @@ sub disable {
     my ($self, $name) = @_;
     return 0 unless defined $name && exists $self->{overlays}->{$name};
     my $overlay = $self->{overlays}->{$name};
-    $overlay->{enabled} = 0 if ref($overlay) && ref($overlay) eq 'HASH';
-    $overlay->{enabled} = 0 if ref($overlay) && ref($overlay) ne 'HASH';
-    return 0;
+    $overlay->{enabled} = 0 if ref($overlay);   # cualquier referencia: objeto o hashref
+    return 1;   # retorna 1 en éxito, igual que enable()
 }
 
 sub list {
@@ -70,12 +68,15 @@ sub active_overlays {
     for my $name (@{ $self->{order} || [] }) {
         my $overlay = $self->{overlays}->{$name};
         next unless $overlay;
-        my $enabled = 1;
+        my $enabled = 0;   # por defecto: desactivado hasta que enable() lo active
         if (ref($overlay) eq 'HASH') {
             $enabled = $overlay->{enabled} ? 1 : 0;
         }
         elsif (ref($overlay)) {
-            $enabled = exists $overlay->{enabled} ? ($overlay->{enabled} ? 1 : 0) : 1;
+            # Para objetos blessed: si nunca se llamó enable()/disable(), se
+            # considera desactivado. _sync_overlay_layer_state() establece el
+            # estado correcto al arrancar basado en OverlaySettings.
+            $enabled = exists $overlay->{enabled} ? ($overlay->{enabled} ? 1 : 0) : 0;
         }
         next unless $enabled;
         push @active, $overlay;

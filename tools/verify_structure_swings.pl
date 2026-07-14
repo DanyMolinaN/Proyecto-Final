@@ -117,23 +117,37 @@ sub run_engine {
     print "OK Test2 scope: external=@{[scalar @external]} internal=@{[scalar @internal]}\n";
 }
 
-# ── Test 3: BOS/CHoCH solo referencian swings externos ───────────────────────
+# ── Test 3: BOS/CHoCH referencian un swing real de su propio scope ───────────
+# (external -> swing externo, internal -> swing interno; ambos scopes generan
+# BOS y CHoCH desde que se corrigio la deteccion de rupturas internas)
 {
     my ($res) = run_engine();
 
     my %ext_idx = map { $_->{index} => 1 }
         grep { ($_->{scope} // '') eq 'external' } @{ $res->{swings} || [] };
+    my %int_idx = map { $_->{index} => 1 }
+        grep { ($_->{scope} // '') eq 'internal' } @{ $res->{internal_swings} || [] };
 
     my @all_breaks = (@{ $res->{breaks} || [] }, @{ $res->{changes} || [] });
+    my ($ext_events, $int_events) = (0, 0);
     for my $ev (@all_breaks) {
         next unless $ev && ref $ev eq 'HASH';
         my $si = $ev->{break_index} // $ev->{swing_index};
         next unless defined $si;
-        die "Test3: break references non-external swing index=$si\n"
-            unless $ext_idx{$si};
+        my $scope = $ev->{scope} // 'external';
+        if ($scope eq 'internal') {
+            die "Test3: internal break references unknown internal swing index=$si\n"
+                unless $int_idx{$si};
+            $int_events++;
+        }
+        else {
+            die "Test3: external break references unknown external swing index=$si\n"
+                unless $ext_idx{$si};
+            $ext_events++;
+        }
     }
 
-    print "OK Test3 breaks reference external swings only (events=@{[scalar @all_breaks]})\n";
+    print "OK Test3 breaks reference real swings (external=$ext_events internal=$int_events)\n";
 }
 
 # ── Test 4: re-clasificacion vs swing externo previo (tolerancia ATR) ────────

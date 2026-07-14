@@ -37,6 +37,19 @@ use Market::Concepts::FVGEngine;
 use Market::Overlays::LiquidityOverlay;
 use Market::Overlays::StructureOverlay;
 use Market::Overlays::FVGOverlay;
+use Market::Overlays::OrderBlockOverlay;
+use Market::Overlays::VolumeProfileOverlay;
+use Market::Overlays::AnchoredVWAPOverlay;
+use Market::Concepts::OrderBlockEngine;
+use Market::Concepts::SMCStructureEngine;
+use Market::Volume::VolumeProfileEngine;
+use Market::Volume::AnchoredVWAP;
+use Market::Indicators::ZigZagMTF;
+use Market::Indicators::ZigZagVolumeProfile;
+use Market::Concepts::FibonacciEngine;
+use Market::Overlays::FibonacciOverlay;
+use Market::Strategies::Indicators::SupplyDemand;
+use Market::Overlays::SupplyDemandOverlay;
 
 sub new {
     my ($class, %args) = @_;
@@ -97,6 +110,19 @@ sub new {
         liquidity => $liquidity_engine,
     );
     my $fvg_engine = $args{fvg_engine} || Market::Concepts::FVGEngine->new();
+    my $orderblock_engine = $args{orderblock_engine} || Market::Concepts::OrderBlockEngine->new();
+    my $smc_structure_engine = $args{smc_structure_engine}
+        || Market::Concepts::SMCStructureEngine->new(
+            swing_length    => $args{smc_swing_length}    // 50,
+            internal_length => $args{smc_internal_length} //  5,
+            eq_length       => $args{smc_eq_length}       //  3,
+            eq_threshold    => $args{smc_eq_threshold}    //  0.1,
+        );
+    my $volume_profile_engine = $args{volume_profile_engine} || Market::Volume::VolumeProfileEngine->new();
+    my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
+    my $fibonacci_engine = $args{fibonacci_engine} || Market::Concepts::FibonacciEngine->new();
+    my $supply_demand_engine = $args{supply_demand_engine} || Market::Strategies::Indicators::SupplyDemand->new();
+
     my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
     my $liquidity_overlay = Market::Overlays::LiquidityOverlay->new(
@@ -106,6 +132,21 @@ sub new {
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
     my $fvg_overlay = Market::Overlays::FVGOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $orderblock_overlay = Market::Overlays::OrderBlockOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $volume_profile_overlay = Market::Overlays::VolumeProfileOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $anchored_vwap_overlay = Market::Overlays::AnchoredVWAPOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $fibonacci_overlay = Market::Overlays::FibonacciOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $supply_demand_overlay = Market::Overlays::SupplyDemandOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
 
@@ -126,9 +167,20 @@ sub new {
         liquidity_engine     => $liquidity_engine,
         structure_engine     => $structure_engine,
         fvg_engine           => $fvg_engine,
+        orderblock_engine    => $orderblock_engine,
+        smc_structure_engine => $smc_structure_engine,
+        volume_profile_engine => $volume_profile_engine,
+        anchored_vwap        => $anchored_vwap,
+        fibonacci_engine     => $fibonacci_engine,
+        supply_demand_engine => $supply_demand_engine,
         liquidity_overlay    => $liquidity_overlay,
         structure_overlay    => $structure_overlay,
         fvg_overlay          => $fvg_overlay,
+        orderblock_overlay   => $orderblock_overlay,
+        volume_profile_overlay => $volume_profile_overlay,
+        anchored_vwap_overlay => $anchored_vwap_overlay,
+        fibonacci_overlay    => $fibonacci_overlay,
+        supply_demand_overlay => $supply_demand_overlay,
         width                => $width,
         height               => $height,
         price_height         => $price_height,
@@ -717,9 +769,11 @@ sub build_control_panel {
     )->pack(-side => 'left', -padx => 8, -fill => 'x', -expand => 1);
 
     $self->{_overlay_vars} = {};
+    $self->{_overlay_btns} = {};          # refs a widgets Checkbutton para _update_button_states
     $self->{_indicator_sections} = {};
     my $settings = $self->{overlay_settings};
     my $schema = $settings && $settings->can('schema') ? $settings->schema() : [];
+    my %k2o = $self->_key_to_overlay_map();   # key -> nombre de overlay
 
     for my $category (@$schema) {
         my $cat_label = $category->{label} || $category->{id};
@@ -755,24 +809,42 @@ sub build_control_panel {
         for my $opt (@{ $category->{options} || [] }) {
             my ($key, $label) = @$opt;
             $self->{_overlay_vars}{$key} = $settings->enabled($key);
-            $body->Checkbutton(
-                -text       => $label,
-                -variable   => \$self->{_overlay_vars}{$key},
-                -selectcolor => '#2a2e39',
-                -background => '#171b24',
-                -foreground => $fg,
-                -activebackground => '#242936',
-                -activeforeground => '#ffffff',
-                -font       => 'Helvetica 8',
-                -anchor     => 'w',
-                -padx       => 4,
-                -pady       => 1,
-                -command    => sub {
+
+            # Determina si el overlay para este boton esta registrado y disponible.
+            my $overlay_name = $k2o{$key};
+            my $available = defined $overlay_name
+                ? ($self->{overlay_manager} && $self->{overlay_manager}->get($overlay_name) ? 1 : 0)
+                : 0;
+
+            my $btn_fg    = $available ? $fg : '#4a5264';
+            my $btn_state = $available ? 'normal' : 'disabled';
+
+            my $btn = $body->Checkbutton(
+                -text               => $label,
+                -variable           => \$self->{_overlay_vars}{$key},
+                -selectcolor        => '#2a2e39',
+                -background         => '#171b24',
+                -foreground         => $btn_fg,
+                -disabledforeground => '#4a5264',
+                -activebackground   => '#242936',
+                -activeforeground   => '#ffffff',
+                -font               => 'Helvetica 8',
+                -anchor             => 'w',
+                -padx               => 4,
+                -pady               => 1,
+                -state              => $btn_state,
+                -command            => sub {
                     $self->set_overlay_option($key, $self->{_overlay_vars}{$key});
                 },
-            )->pack(-side => 'top', -fill => 'x', -anchor => 'w');
+            );
+            $btn->pack(-side => 'top', -fill => 'x', -anchor => 'w');
+            $self->{_overlay_btns}{$key} = $btn;   # guardar ref para _update_button_states
         }
     }
+
+    # Actualizar estados de botones segun overlays actualmente registrados.
+    # Esto conecta _update_button_states() que antes era codigo muerto.
+    $self->_update_button_states();
 
     return $panel;
 }
@@ -825,26 +897,44 @@ sub _sync_overlay_layer_state {
     return unless $self->{overlay_manager} && $self->{overlay_settings};
     my $s = $self->{overlay_settings};
 
+    # FIX: show_eqh / show_eql se renderizan en LiquidityOverlay (eq_levels),
+    # NO en StructureOverlay. Se mueven de $structure_on a $liquidity_on.
     my $structure_on =
         $s->enabled('show_swing_high') || $s->enabled('show_swing_low')
         || $s->enabled('show_hh') || $s->enabled('show_hl')
         || $s->enabled('show_lh') || $s->enabled('show_ll')
         || $s->enabled('show_bos') || $s->enabled('show_choch')
-        || $s->enabled('show_eqh') || $s->enabled('show_eql')
         || $s->enabled('show_internal_zigzag') || $s->enabled('show_external_zigzag')
         || $s->enabled('show_internal_swings') || $s->enabled('show_external_swings');
 
     my $liquidity_on =
         $s->enabled('show_liquidity_levels')
         || $s->enabled('show_internal_liquidity') || $s->enabled('show_external_liquidity')
-        || $s->enabled('show_sweeps') || $s->enabled('show_grabs') || $s->enabled('show_runs');
+        || $s->enabled('show_sweeps') || $s->enabled('show_grabs') || $s->enabled('show_runs')
+        || $s->enabled('show_eqh')   || $s->enabled('show_eql');   # FIX: movidos desde structure
 
-    my $fvg_on = $s->enabled('show_fvg');
+    my $fvg_on            = $s->enabled('show_fvg');
+    my $orderblock_on     = $s->enabled('show_orderblocks');
+    my $volume_profile_on = $s->enabled('show_volume_profile');
+    my $anchored_vwap_on  = $s->enabled('show_anchored_vwap');
+    # fibonacci / supply_demand: overlays pendientes de registro (Plan 4).
+    # enable()/disable() con nombre desconocido retorna 0 sin crashear.
+    my $fibonacci_on      = $s->enabled('show_fibonacci');
+    my $supply_demand_on  = $s->enabled('show_supply_demand');
 
-    for my $pair ([structure => $structure_on], [liquidity => $liquidity_on], [fvg => $fvg_on]) {
+    for my $pair (
+        [structure     => $structure_on],
+        [liquidity     => $liquidity_on],
+        [fvg           => $fvg_on],
+        [orderblock    => $orderblock_on],
+        [volume_profile => $volume_profile_on],
+        [anchored_vwap => $anchored_vwap_on],
+        [fibonacci     => $fibonacci_on],
+        [supply_demand => $supply_demand_on],
+    ) {
         my ($name, $on) = @$pair;
         if ($on) {
-            $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
+            $self->{overlay_manager}->enable($name)  if $self->{overlay_manager}->can('enable');
         }
         else {
             $self->{overlay_manager}->disable($name) if $self->{overlay_manager}->can('disable');
@@ -852,6 +942,72 @@ sub _sync_overlay_layer_state {
     }
     return $self;
 }
+
+# _key_to_overlay_map() -> %map
+# Fuente unica de verdad: mapea cada clave de OverlaySettings al nombre del overlay
+# en OverlayManager que la renderiza. undef = no existe overlay para esa clave.
+# Usado por build_control_panel (estado de botones) y _update_button_states.
+sub _key_to_overlay_map {
+    my ($self) = @_;   # $self no se usa; mapa estatico
+    return (
+        # Price Action → structure overlay
+        show_swing_high         => 'structure',
+        show_swing_low          => 'structure',
+        show_hh                 => 'structure',
+        show_hl                 => 'structure',
+        show_lh                 => 'structure',
+        show_ll                 => 'structure',
+        show_bos                => 'structure',
+        show_choch              => 'structure',
+        # EQH/EQL: se renderizan en LiquidityOverlay (eq_levels), no en StructureOverlay
+        show_eqh                => 'liquidity',
+        show_eql                => 'liquidity',
+        # Structure → structure overlay
+        show_internal_zigzag    => 'structure',
+        show_external_zigzag    => 'structure',
+        show_internal_swings    => 'structure',
+        show_external_swings    => 'structure',
+        # Liquidity → liquidity overlay
+        show_liquidity_levels   => 'liquidity',
+        show_internal_liquidity => 'liquidity',
+        show_external_liquidity => 'liquidity',
+        show_sweeps             => 'liquidity',
+        show_grabs              => 'liquidity',
+        show_runs               => 'liquidity',
+        # Smart Money
+        show_fvg                => 'fvg',
+        show_orderblocks        => 'orderblock',
+        show_fibonacci          => 'fibonacci',
+        show_supply_demand      => 'supply_demand',
+        # Volume
+        show_anchored_vwap      => 'anchored_vwap',
+        show_volume_profile     => 'volume_profile',
+        # Strategies: sin overlay registrado
+        show_signals            => undef,
+        show_entries            => undef,
+    );
+}
+
+# _update_button_states()
+# Actualiza el estado visual (normal/disabled) de todos los checkbuttons del panel
+# de indicadores segun si su overlay esta actualmente registrado en overlay_manager.
+# Debe llamarse tras _register_overlays() o tras conectar nuevos overlays (Plan 4).
+sub _update_button_states {
+    my ($self) = @_;
+    return unless $self->{_overlay_btns} && $self->{overlay_manager};
+    my %k2o = $self->_key_to_overlay_map();
+    for my $key (keys %{ $self->{_overlay_btns} }) {
+        my $btn = $self->{_overlay_btns}{$key};
+        next unless $btn && $btn->can('configure');
+        my $overlay_name = $k2o{$key};
+        my $available = defined $overlay_name
+            ? ($self->{overlay_manager}->get($overlay_name) ? 1 : 0)
+            : 0;
+        eval { $btn->configure(-state => $available ? 'normal' : 'disabled'); };
+    }
+    return $self;
+}
+
 
 # ── Replay ────────────────────────────────────────────────────────────────────
 
@@ -2073,9 +2229,14 @@ sub _register_overlays {
     return unless $self->{overlay_manager} && $self->{overlay_manager}->can('register');
 
     my @overlays = (
-        [liquidity => $self->{liquidity_overlay}],
-        [fvg       => $self->{fvg_overlay}],
-        [structure => $self->{structure_overlay}],
+        [liquidity       => $self->{liquidity_overlay}],
+        [fvg             => $self->{fvg_overlay}],
+        [structure       => $self->{structure_overlay}],
+        [orderblock      => $self->{orderblock_overlay}],
+        [volume_profile  => $self->{volume_profile_overlay}],
+        [anchored_vwap   => $self->{anchored_vwap_overlay}],
+        [fibonacci       => $self->{fibonacci_overlay}],
+        [supply_demand   => $self->{supply_demand_overlay}],
     );
 
     for my $entry (@overlays) {
@@ -2097,7 +2258,7 @@ sub _register_overlays {
 sub invalidate_analysis_cache {
     my ($self) = @_;
     $self->{analysis_cache} = undef;
-    for my $key (qw(liquidity_engine structure_engine fvg_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2129,7 +2290,7 @@ sub rebuild_analysis_cache {
         view_end          => $view_end,
     );
 
-    for my $key (qw(liquidity_engine structure_engine fvg_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2152,11 +2313,37 @@ sub rebuild_analysis_cache {
     my $fvg_data = $self->{fvg_engine}->calculate(
         $self->{market_data}, $self->{structure_engine}, %engine_args,
     );
+    # SMCStructureEngine v2: doble máquina de estados (Swing N=50 + Internal N=5)
+    my $smc_structure_data = $self->{smc_structure_engine}->calculate(
+        $self->{market_data}, %engine_args,
+    );
+    # OrderBlockEngine v2: consume eventos BOS/CHoCH del SMCStructureEngine
+    my $orderblock_data = $self->{orderblock_engine}->calculate(
+        $self->{market_data}, $smc_structure_data, %engine_args,
+    );
+    my $volume_profile_data = $self->{volume_profile_engine}->calculate(
+        $self->{market_data}, %engine_args,
+    );
+    my $anchored_vwap_data = $self->{anchored_vwap}->calculate(
+        $self->{market_data}, %engine_args,
+    );
+    my $fibonacci_data = $self->{fibonacci_engine}->calculate(
+        $self->{market_data}, $self->{structure_engine}, %engine_args,
+    );
+    my $supply_demand_data = $self->{supply_demand_engine}->calculate(
+        $self->{market_data}, %engine_args,
+    );
 
     $self->{analysis_cache} = {
-        liquidity => $liquidity_data,
-        structure => $structure_data,
-        fvg       => $fvg_data,
+        liquidity      => $liquidity_data,
+        structure      => $structure_data,
+        smc_structure  => $smc_structure_data,
+        fvg            => $fvg_data,
+        orderblock     => $orderblock_data,
+        volume_profile => $volume_profile_data,
+        anchored_vwap  => $anchored_vwap_data,
+        fibonacci      => $fibonacci_data,
+        supply_demand  => { active => $supply_demand_data->{zones} },
     };
     return $self->{analysis_cache};
 }
@@ -2204,11 +2391,21 @@ sub _prepare_overlay_data {
     my $liquidity_data = $cache->{liquidity};
     my $structure_data = $cache->{structure};
     my $fvg_data       = $cache->{fvg};
+    my $orderblock_data = $cache->{orderblock};
+    my $volume_profile_data = $cache->{volume_profile};
+    my $anchored_vwap_data = $cache->{anchored_vwap};
+    my $fibonacci_data = $cache->{fibonacci};
+    my $supply_demand_data = $cache->{supply_demand};
 
     my $overlay_names = {
-        liquidity => $liquidity_data,
-        structure => $structure_data,
-        fvg       => $fvg_data,
+        liquidity      => $liquidity_data,
+        structure      => $structure_data,
+        fvg            => $fvg_data,
+        orderblock     => $orderblock_data,
+        volume_profile => $volume_profile_data,
+        anchored_vwap  => $anchored_vwap_data,
+        fibonacci      => $fibonacci_data,
+        supply_demand  => $supply_demand_data,
     };
 
     for my $name (keys %$overlay_names) {

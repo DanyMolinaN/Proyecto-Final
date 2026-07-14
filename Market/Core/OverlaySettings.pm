@@ -58,8 +58,10 @@ sub schema {
         {
             id => 'smart_money', label => 'Smart Money',
             options => [
-                [show_fvg          => 'FVG'],
-                [show_orderblocks  => 'Order Blocks'],
+                [show_fvg           => 'FVG'],
+                [show_orderblocks   => 'Order Blocks'],
+                [show_fibonacci     => 'Fibonacci'],
+                [show_supply_demand => 'Supply/Demand'],
             ],
         },
         {
@@ -82,7 +84,9 @@ sub schema {
 sub enabled {
     my ($self, $key) = @_;
     return 1 unless defined $key;
-    return exists $self->{values}{$key} ? ($self->{values}{$key} ? 1 : 0) : 1;
+    # Si la clave no existe, retorna 0 (desconocido = desactivado por defecto).
+    # Todas las claves válidas están pre-pobladas por _default_values().
+    return exists $self->{values}{$key} ? ($self->{values}{$key} ? 1 : 0) : 0;
 }
 
 sub set {
@@ -135,14 +139,16 @@ sub _default_values {
             $values{$key} = 1;
         }
     }
-    $values{show_internal_zigzag} = 0;
-    $values{show_internal_swings} = 0;
+    $values{show_internal_zigzag}   = 0;
+    $values{show_internal_swings}   = 0;
     $values{show_internal_liquidity} = 0;
-    $values{show_orderblocks} = 0;
-    $values{show_anchored_vwap} = 0;
-    $values{show_volume_profile} = 0;
-    $values{show_signals} = 0;
-    $values{show_entries} = 0;
+    $values{show_orderblocks}       = 0;
+    $values{show_fibonacci}         = 0;  # default OFF (overlay registrado)
+    $values{show_supply_demand}     = 0;  # default OFF (overlay registrado)
+    $values{show_anchored_vwap}     = 0;
+    $values{show_volume_profile}    = 0;
+    $values{show_signals}           = 0;  # sin overlay registrado
+    $values{show_entries}           = 0;  # sin overlay registrado
     return \%values;
 }
 

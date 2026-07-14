@@ -29,6 +29,11 @@ sub draw {
     my $data   = $args{data}   || $self->{data};
     return unless $canvas && $scale && $data && ref($data) eq 'HASH';
 
+    my $settings = $args{settings} || $self->{settings};
+    if ($settings && $settings->can('enabled')) {
+        return $self unless $settings->enabled('show_anchored_vwap');
+    }
+
     $self->clear($canvas);
 
     my $vwap = $data->{vwap};
