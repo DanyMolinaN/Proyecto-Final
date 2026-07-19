@@ -68,6 +68,32 @@ sub draw {
     my $external_swings = $data->{external_swings} || $swings;
     my $breaks  = ref($data->{breaks})  eq 'ARRAY' ? $data->{breaks}  : [];
     my $changes = ref($data->{changes}) eq 'ARRAY' ? $data->{changes} : [];
+
+    # Soporte transparente para SMCStructureEngine (v2)
+    if (exists $data->{events} && exists $data->{swing_highs}) {
+        my @sh = map { { %$_ } } @{$data->{swing_highs} || []};
+        my @sl = map { { %$_ } } @{$data->{swing_lows}  || []};
+        my @ih = map { { %$_ } } @{$data->{internal_highs} || []};
+        my @il = map { { %$_ } } @{$data->{internal_lows}  || []};
+        for my $s (@sh, @sl) { $s->{price} = $s->{level}; $s->{scope} = 'external'; $s->{type} = 'swing'; }
+        for my $s (@ih, @il) { $s->{price} = $s->{level}; $s->{scope} = 'internal'; $s->{type} = 'swing'; }
+        $external_swings = [@sh, @sl];
+        $internal_swings = [@ih, @il];
+        $swings = $external_swings;
+
+        my @evs = map { { %$_ } } @{$data->{events} || []};
+        for my $e (@evs) { $e->{type} = $e->{kind}; }
+        $breaks = \@evs;
+
+        my @eqh = map { { %$_ } } @{$data->{eqh} || []};
+        my @eql = map { { %$_ } } @{$data->{eql} || []};
+        for my $e (@eqh, @eql) {
+            $e->{type} = $e->{kind};
+            $e->{price} = $e->{level};
+        }
+        $changes = [@eqh, @eql];
+    }
+
     my @points  = (@$breaks, @$changes);
 
     my $show_internal = $self->{show_internal};
@@ -199,9 +225,20 @@ sub draw {
             ? ($span_x1 + $span_x2) / 2
             : $scale->index_to_center_x($idx);
         my $dir = lc($point->{direction} // $point->{new_trend} // '');
+        
         my $is_break = ($label =~ /^(?:BOS|CHoCH)/i && defined $span_y) ? 1 : 0;
-        my $dy  = $is_break ? 0 : (($dir eq 'bearish') ? $tag_offset : -$tag_offset);
-        my $ty  = ($is_break ? $span_y : $anchor_y) + $dy;
+        my $is_eq    = ($label =~ /^(?:EQH|EQL)/i && defined $point->{start_index} && defined $point->{end_index}) ? 1 : 0;
+
+        if ($is_eq) {
+            $span_x1 = $scale->index_to_center_x($point->{start_index});
+            $span_x2 = $scale->index_to_center_x($point->{end_index});
+            $span_y  = defined $level ? $scale->value_to_y($level) : $anchor_y;
+            $x = ($span_x1 + $span_x2) / 2;
+        }
+
+        my $has_span = $is_break || $is_eq;
+        my $dy  = $has_span ? 0 : (($dir eq 'bearish') ? $tag_offset : -$tag_offset);
+        my $ty  = ($has_span ? $span_y : $anchor_y) + $dy;
         next unless _y_in_clip($ty, $clip_y_top, $clip_y_bottom);
 
         my $priority = Market::Overlays::RenderPolicy::priority_for(
@@ -220,14 +257,14 @@ sub draw {
             text       => $label,
             fg         => $fg,
             bg         => $bg,
-            span       => ($is_break ? {
+            span       => ($has_span ? {
                 x1 => $span_x1,
                 x2 => $span_x2,
                 y  => $span_y,
-                break_x => $scale->index_to_center_x($idx),
+                break_x => $is_break ? $scale->index_to_center_x($idx) : undef,
             } : undef),
-            fixed_position => $is_break ? 1 : 0,
-            no_group       => $is_break ? 1 : 0,
+            fixed_position => $has_span ? 1 : 0,
+            no_group       => $has_span ? 1 : 0,
             priority   => $priority,
             protected  => ($label =~ /^(?:BOS|CHoCH)/i) ? 1 : 0,
             kind       => 'event',

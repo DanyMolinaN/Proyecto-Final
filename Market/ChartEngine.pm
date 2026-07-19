@@ -41,21 +41,15 @@ use Market::Overlays::OrderBlockOverlay;
 use Market::Overlays::VolumeProfileOverlay;
 use Market::Overlays::AnchoredVWAPOverlay;
 use Market::Concepts::OrderBlockEngine;
-<<<<<<< HEAD
 use Market::Concepts::SMCStructureEngine;
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 use Market::Volume::VolumeProfileEngine;
 use Market::Volume::AnchoredVWAP;
 use Market::Indicators::ZigZagMTF;
 use Market::Indicators::ZigZagVolumeProfile;
-<<<<<<< HEAD
 use Market::Concepts::FibonacciEngine;
 use Market::Overlays::FibonacciOverlay;
 use Market::Strategies::Indicators::SupplyDemand;
 use Market::Overlays::SupplyDemandOverlay;
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 
 sub new {
     my ($class, %args) = @_;
@@ -117,7 +111,6 @@ sub new {
     );
     my $fvg_engine = $args{fvg_engine} || Market::Concepts::FVGEngine->new();
     my $orderblock_engine = $args{orderblock_engine} || Market::Concepts::OrderBlockEngine->new();
-<<<<<<< HEAD
     my $smc_structure_engine = $args{smc_structure_engine}
         || Market::Concepts::SMCStructureEngine->new(
             swing_length    => $args{smc_swing_length}    // 50,
@@ -129,10 +122,6 @@ sub new {
     my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
     my $fibonacci_engine = $args{fibonacci_engine} || Market::Concepts::FibonacciEngine->new();
     my $supply_demand_engine = $args{supply_demand_engine} || Market::Strategies::Indicators::SupplyDemand->new();
-=======
-    my $volume_profile_engine = $args{volume_profile_engine} || Market::Volume::VolumeProfileEngine->new();
-    my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 
     my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
@@ -154,15 +143,12 @@ sub new {
     my $anchored_vwap_overlay = Market::Overlays::AnchoredVWAPOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
-<<<<<<< HEAD
     my $fibonacci_overlay = Market::Overlays::FibonacciOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
     my $supply_demand_overlay = Market::Overlays::SupplyDemandOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 
     my $self = {
         canvas               => $canvas,
@@ -182,27 +168,19 @@ sub new {
         structure_engine     => $structure_engine,
         fvg_engine           => $fvg_engine,
         orderblock_engine    => $orderblock_engine,
-<<<<<<< HEAD
         smc_structure_engine => $smc_structure_engine,
         volume_profile_engine => $volume_profile_engine,
         anchored_vwap        => $anchored_vwap,
         fibonacci_engine     => $fibonacci_engine,
         supply_demand_engine => $supply_demand_engine,
-=======
-        volume_profile_engine => $volume_profile_engine,
-        anchored_vwap        => $anchored_vwap,
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
         liquidity_overlay    => $liquidity_overlay,
         structure_overlay    => $structure_overlay,
         fvg_overlay          => $fvg_overlay,
         orderblock_overlay   => $orderblock_overlay,
         volume_profile_overlay => $volume_profile_overlay,
         anchored_vwap_overlay => $anchored_vwap_overlay,
-<<<<<<< HEAD
         fibonacci_overlay    => $fibonacci_overlay,
         supply_demand_overlay => $supply_demand_overlay,
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
         width                => $width,
         height               => $height,
         price_height         => $price_height,
@@ -935,7 +913,6 @@ sub _sync_overlay_layer_state {
         || $s->enabled('show_sweeps') || $s->enabled('show_grabs') || $s->enabled('show_runs')
         || $s->enabled('show_eqh')   || $s->enabled('show_eql');   # FIX: movidos desde structure
 
-<<<<<<< HEAD
     my $fvg_on            = $s->enabled('show_fvg');
     my $orderblock_on     = $s->enabled('show_orderblocks');
     my $volume_profile_on = $s->enabled('show_volume_profile');
@@ -954,21 +931,6 @@ sub _sync_overlay_layer_state {
         [anchored_vwap => $anchored_vwap_on],
         [fibonacci     => $fibonacci_on],
         [supply_demand => $supply_demand_on],
-=======
-    my $fvg_on = $s->enabled('show_fvg');
-    
-    my $orderblock_on = $s->enabled('show_orderblocks');
-    my $volume_profile_on = $s->enabled('show_volume_profile');
-    my $anchored_vwap_on = $s->enabled('show_anchored_vwap');
-
-    for my $pair (
-        [structure => $structure_on], 
-        [liquidity => $liquidity_on], 
-        [fvg => $fvg_on],
-        [orderblock => $orderblock_on],
-        [volume_profile => $volume_profile_on],
-        [anchored_vwap => $anchored_vwap_on]
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
     ) {
         my ($name, $on) = @$pair;
         if ($on) {
@@ -2273,11 +2235,8 @@ sub _register_overlays {
         [orderblock      => $self->{orderblock_overlay}],
         [volume_profile  => $self->{volume_profile_overlay}],
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
-<<<<<<< HEAD
         [fibonacci       => $self->{fibonacci_overlay}],
         [supply_demand   => $self->{supply_demand_overlay}],
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
     );
 
     for my $entry (@overlays) {
@@ -2299,11 +2258,7 @@ sub _register_overlays {
 sub invalidate_analysis_cache {
     my ($self) = @_;
     $self->{analysis_cache} = undef;
-<<<<<<< HEAD
     for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
-=======
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap)) {
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2335,11 +2290,7 @@ sub rebuild_analysis_cache {
         view_end          => $view_end,
     );
 
-<<<<<<< HEAD
     for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
-=======
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap)) {
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2362,7 +2313,6 @@ sub rebuild_analysis_cache {
     my $fvg_data = $self->{fvg_engine}->calculate(
         $self->{market_data}, $self->{structure_engine}, %engine_args,
     );
-<<<<<<< HEAD
     # SMCStructureEngine v2: doble máquina de estados (Swing N=50 + Internal N=5)
     my $smc_structure_data = $self->{smc_structure_engine}->calculate(
         $self->{market_data}, %engine_args,
@@ -2370,10 +2320,6 @@ sub rebuild_analysis_cache {
     # OrderBlockEngine v2: consume eventos BOS/CHoCH del SMCStructureEngine
     my $orderblock_data = $self->{orderblock_engine}->calculate(
         $self->{market_data}, $smc_structure_data, %engine_args,
-=======
-    my $orderblock_data = $self->{orderblock_engine}->calculate(
-        $self->{market_data}, $self->{structure_engine}, %engine_args,
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
     );
     my $volume_profile_data = $self->{volume_profile_engine}->calculate(
         $self->{market_data}, %engine_args,
@@ -2381,32 +2327,23 @@ sub rebuild_analysis_cache {
     my $anchored_vwap_data = $self->{anchored_vwap}->calculate(
         $self->{market_data}, %engine_args,
     );
-<<<<<<< HEAD
     my $fibonacci_data = $self->{fibonacci_engine}->calculate(
         $self->{market_data}, $self->{structure_engine}, %engine_args,
     );
     my $supply_demand_data = $self->{supply_demand_engine}->calculate(
         $self->{market_data}, %engine_args,
     );
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 
     $self->{analysis_cache} = {
         liquidity      => $liquidity_data,
         structure      => $structure_data,
-<<<<<<< HEAD
         smc_structure  => $smc_structure_data,
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
         fvg            => $fvg_data,
         orderblock     => $orderblock_data,
         volume_profile => $volume_profile_data,
         anchored_vwap  => $anchored_vwap_data,
-<<<<<<< HEAD
         fibonacci      => $fibonacci_data,
         supply_demand  => { active => $supply_demand_data->{zones} },
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
     };
     return $self->{analysis_cache};
 }
@@ -2457,24 +2394,18 @@ sub _prepare_overlay_data {
     my $orderblock_data = $cache->{orderblock};
     my $volume_profile_data = $cache->{volume_profile};
     my $anchored_vwap_data = $cache->{anchored_vwap};
-<<<<<<< HEAD
     my $fibonacci_data = $cache->{fibonacci};
     my $supply_demand_data = $cache->{supply_demand};
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
 
     my $overlay_names = {
         liquidity      => $liquidity_data,
-        structure      => $structure_data,
+        structure      => $cache->{smc_structure} || $structure_data,
         fvg            => $fvg_data,
         orderblock     => $orderblock_data,
         volume_profile => $volume_profile_data,
         anchored_vwap  => $anchored_vwap_data,
-<<<<<<< HEAD
         fibonacci      => $fibonacci_data,
         supply_demand  => $supply_demand_data,
-=======
->>>>>>> 6d2c9042e60dd0c2c0e1fbba8cea24ce7f4a49bc
     };
 
     for my $name (keys %$overlay_names) {
