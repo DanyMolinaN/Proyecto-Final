@@ -50,8 +50,8 @@ use Market::Concepts::FibonacciEngine;
 use Market::Overlays::FibonacciOverlay;
 use Market::Strategies::Indicators::SupplyDemand;
 use Market::Overlays::SupplyDemandOverlay;
-use Market::Indicators::TrendLine;
-use Market::Overlays::TrendLineOverlay;
+use Market::Indicators::TrendChannel;
+use Market::Overlays::TrendChannelOverlay;
 
 sub new {
     my ($class, %args) = @_;
@@ -124,7 +124,7 @@ sub new {
     my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
     my $fibonacci_engine = $args{fibonacci_engine} || Market::Concepts::FibonacciEngine->new();
     my $supply_demand_engine = $args{supply_demand_engine} || Market::Strategies::Indicators::SupplyDemand->new();
-    my $trendline_engine = $args{trendline_engine} || Market::Indicators::TrendLine->new();
+    my $trend_channel_engine = $args{trend_channel_engine} || Market::Indicators::TrendChannel->new();
 
     my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
@@ -152,7 +152,7 @@ sub new {
     my $supply_demand_overlay = Market::Overlays::SupplyDemandOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
-    my $trendline_overlay = Market::Overlays::TrendLineOverlay->new(
+    my $trend_channel_overlay = Market::Overlays::TrendChannelOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
 
@@ -187,8 +187,8 @@ sub new {
         anchored_vwap_overlay => $anchored_vwap_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
         supply_demand_overlay => $supply_demand_overlay,
-        trendline_engine     => $trendline_engine,
-        trendline_overlay    => $trendline_overlay,
+        trend_channel_engine     => $trend_channel_engine,
+        trend_channel_overlay    => $trend_channel_overlay,
         width                => $width,
         height               => $height,
         price_height         => $price_height,
@@ -929,7 +929,7 @@ sub _sync_overlay_layer_state {
     # enable()/disable() con nombre desconocido retorna 0 sin crashear.
     my $fibonacci_on      = $s->enabled('show_fibonacci');
     my $supply_demand_on  = $s->enabled('show_supply_demand');
-    my $trendline_on      = $s->enabled('show_trendline');
+    my $trend_channel_on      = $s->enabled('show_trend_channel');
 
     for my $pair (
         [structure     => $structure_on],
@@ -940,7 +940,7 @@ sub _sync_overlay_layer_state {
         [anchored_vwap => $anchored_vwap_on],
         [fibonacci     => $fibonacci_on],
         [supply_demand => $supply_demand_on],
-        [trendline     => $trendline_on],
+        [trend_channel     => $trend_channel_on],
     ) {
         my ($name, $on) = @$pair;
         if ($on) {
@@ -977,7 +977,7 @@ sub _key_to_overlay_map {
         show_external_zigzag    => 'structure',
         show_internal_swings    => 'structure',
         show_external_swings    => 'structure',
-        show_trendline          => 'trendline',
+        show_trend_channel          => 'trend_channel',
         # Liquidity → liquidity overlay
         show_liquidity_levels   => 'liquidity',
         show_internal_liquidity => 'liquidity',
@@ -2106,24 +2106,33 @@ sub _draw_overlays {
     for my $overlay (@$overlays) {
         next unless $overlay;
         next unless $overlay->can('draw');
-        $overlay->draw(
-            canvas      => $self->{canvas},
-            scale       => $self->{price_scale},
-            atr_scale   => $self->{atr_scale},
-            market_data => $self->{market_data},
-            start_idx   => $self->{start_idx},
-            end_idx     => $self->{end_idx},
-            view_start  => $self->{view_start},
-            x_shift     => $self->{x_shift},
-            clip_y_top    => 0,
-            clip_y_bottom => $self->{price_height},
-            data        => $overlay->{data},
-        );
+        eval {
+            $overlay->draw(
+                canvas      => $self->{canvas},
+                scale       => $self->{price_scale},
+                atr_scale   => $self->{atr_scale},
+                market_data => $self->{market_data},
+                start_idx   => $self->{start_idx},
+                end_idx     => $self->{end_idx},
+                view_start  => $self->{view_start},
+                x_shift     => $self->{x_shift},
+                clip_y_top    => 0,
+                clip_y_bottom => $self->{price_height},
+                data        => $overlay->{data},
+            );
+        };
+        if ($@) {
+            my $name = ref($overlay) || 'UnknownOverlay';
+            warn "Error drawing overlay $name: $@\n";
+        }
     }
 
     # Asegurar que overlays queden encima de velas/fondos del panel de precios.
     for my $tag (qw(overlay_liquidity overlay_fvg overlay_structure)) {
         eval { $self->{canvas}->raise($tag); };
+        if ($@) {
+            warn "Error raising layer $tag: $@\n";
+        }
     }
 
     return $self;
@@ -2248,7 +2257,7 @@ sub _register_overlays {
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
         [fibonacci       => $self->{fibonacci_overlay}],
         [supply_demand   => $self->{supply_demand_overlay}],
-        [trendline       => $self->{trendline_overlay}],
+        [trend_channel       => $self->{trend_channel_overlay}],
     );
 
     for my $entry (@overlays) {
@@ -2270,7 +2279,7 @@ sub _register_overlays {
 sub invalidate_analysis_cache {
     my ($self) = @_;
     $self->{analysis_cache} = undef;
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trendline_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trend_channel_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2302,7 +2311,7 @@ sub rebuild_analysis_cache {
         view_end          => $view_end,
     );
 
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trendline_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trend_channel_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2310,24 +2319,24 @@ sub rebuild_analysis_cache {
     if ($self->{liquidity_engine} && $self->{liquidity_engine}->can('visible_only')) {
         $self->{liquidity_engine}->visible_only(1);
     }
+    # SMCStructureEngine v2: doble máquina de estados (Swing N=50 + Internal N=5)
+    my $smc_structure_data = $self->{smc_structure_engine}->calculate(
+        $self->{market_data}, %engine_args,
+    );
     my $liquidity_data = $self->{liquidity_engine}->calculate($self->{market_data}, %engine_args);
     my $structure_data = $self->{structure_engine}->calculate(
         $self->{market_data}, %engine_args, liquidity_result => $liquidity_data,
     );
     if ($self->{liquidity_engine} && $self->{liquidity_engine}->can('apply_structure_filter')) {
         $liquidity_data = $self->{liquidity_engine}->apply_structure_filter(
-            $structure_data,
+            $smc_structure_data,
             $self->{market_data},
             %engine_args,
         ) || $liquidity_data;
     }
-    $self->_enrich_liquidity_with_structure_scope($liquidity_data, $structure_data);
+    $self->_enrich_liquidity_with_structure_scope($liquidity_data, $smc_structure_data);
     my $fvg_data = $self->{fvg_engine}->calculate(
-        $self->{market_data}, $self->{structure_engine}, %engine_args,
-    );
-    # SMCStructureEngine v2: doble máquina de estados (Swing N=50 + Internal N=5)
-    my $smc_structure_data = $self->{smc_structure_engine}->calculate(
-        $self->{market_data}, %engine_args,
+        $self->{market_data}, $self->{smc_structure_engine}, %engine_args,
     );
     # OrderBlockEngine v2: consume eventos BOS/CHoCH del SMCStructureEngine
     my $orderblock_data = $self->{orderblock_engine}->calculate(
@@ -2340,13 +2349,13 @@ sub rebuild_analysis_cache {
         $self->{market_data}, %engine_args,
     );
     my $fibonacci_data = $self->{fibonacci_engine}->calculate(
-        $self->{market_data}, $self->{structure_engine}, %engine_args,
+        $self->{market_data}, $self->{smc_structure_engine}, %engine_args,
     );
     my $supply_demand_data = $self->{supply_demand_engine}->calculate(
         $self->{market_data}, %engine_args,
     );
-    my $trendline_data = $self->{trendline_engine}->calculate(
-        $self->{market_data}, source_swings => $structure_data->{external_swings}, %engine_args,
+    my $trend_channel_data = $self->{trend_channel_engine}->calculate(
+        $self->{market_data}, source_swings => $smc_structure_data->{external_swings}, %engine_args,
     );
 
     $self->{analysis_cache} = {
@@ -2359,7 +2368,7 @@ sub rebuild_analysis_cache {
         anchored_vwap  => $anchored_vwap_data,
         fibonacci      => $fibonacci_data,
         supply_demand  => { active => $supply_demand_data->{zones} },
-        trendline      => $trendline_data,
+        trend_channel      => $trend_channel_data,
     };
     return $self->{analysis_cache};
 }
@@ -2412,7 +2421,7 @@ sub _prepare_overlay_data {
     my $anchored_vwap_data = $cache->{anchored_vwap};
     my $fibonacci_data = $cache->{fibonacci};
     my $supply_demand_data = $cache->{supply_demand};
-    my $trendline_data = $cache->{trendline};
+    my $trend_channel_data = $cache->{trend_channel};
 
     my $overlay_names = {
         liquidity      => $liquidity_data,
@@ -2423,7 +2432,7 @@ sub _prepare_overlay_data {
         anchored_vwap  => $anchored_vwap_data,
         fibonacci      => $fibonacci_data,
         supply_demand  => $supply_demand_data,
-        trendline      => $trendline_data,
+        trend_channel      => $trend_channel_data,
     };
 
     for my $name (keys %$overlay_names) {

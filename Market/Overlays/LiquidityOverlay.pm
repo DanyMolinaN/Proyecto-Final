@@ -99,9 +99,10 @@ sub draw {
             my $text_y = $price_y + _liquidity_y_offset($level->{type});
             next unless _y_in_clip($price_y, $clip_y_top, $clip_y_bottom);
             next unless _y_in_clip($text_y, $clip_y_top, $clip_y_bottom);
+            my $draw_end_idx = $level->{invalidated_at} // $level->{resolved_at} // $end_idx;
             my $x1     = $scale->index_to_x($idx);
-            my $x_end  = defined $end_idx
-                ? $scale->index_to_x($end_idx)
+            my $x_end  = defined $draw_end_idx
+                ? $scale->index_to_x($draw_end_idx)
                 : ($x1 + ($scale->{width} || 800) - ($scale->{y_axis_strip_w} || 66));
             $x_end = $x1 + 8 if $x_end <= $x1;
             my $text_x = $x_end - 4;
@@ -144,11 +145,15 @@ sub draw {
             my $fill     = _eq_color($eq->{type});
             next if ($eq->{type} || '') eq 'EQH' && !_enabled($settings, 'show_eqh');
             next if ($eq->{type} || '') eq 'EQL' && !_enabled($settings, 'show_eql');
-            my $x1       = $scale->index_to_x($first_idx);
-            my $x2       = $scale->index_to_x($second_idx);
+            my $draw_end_idx = $eq->{invalidated_at} // $eq->{resolved_at} // $end_idx;
+            my $x1       = $scale->index_to_x($second_idx);
+            my $x2       = defined $draw_end_idx
+                ? $scale->index_to_x($draw_end_idx)
+                : ($x1 + ($scale->{width} || 800) - ($scale->{y_axis_strip_w} || 66));
+            $x2 = $x1 + 8 if $x2 <= $x1;
             my $y        = $scale->value_to_y($price);
             next unless _y_in_clip($y, $clip_y_top, $clip_y_bottom);
-            my $xm       = ($x1 + $x2) / 2;
+            my $xm       = $x2 - 4; # Right align like BSL/SSL or mid. Keep it near the end.
 
             push @labels, {
                 index      => $second_idx,
@@ -156,7 +161,7 @@ sub draw {
                 y_base     => $y,
                 line       => { x1 => $x1, x2 => $x2, y => $y },
                 text       => $eq->{type} || 'EQ',
-                anchor     => 'c',
+                anchor     => 'e',
                 fill       => $fill,
                 font       => $self->{style}{font},
                 bg         => $self->{style}{bg},

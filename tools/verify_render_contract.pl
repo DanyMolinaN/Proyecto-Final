@@ -134,8 +134,8 @@ my $scale = _Scale->new;
 
     assert($bsl_text && $bsl_text->[1] == $x_end - 4, 'BSL label is not anchored to the right end');
     assert($ssl_text && $ssl_text->[1] == $x_end - 4, 'SSL label is not anchored to the right end');
-    assert($eqh_text && $eqh_text->[1] == (($scale->index_to_x(5) + $scale->index_to_x(8)) / 2),
-        'EQH label is not centered on its EQH line');
+    assert($eqh_text && $eqh_text->[1] == $x_end - 4,
+        'EQH label is not anchored to the right end');
 }
 
 print "OK render contract verification\n";

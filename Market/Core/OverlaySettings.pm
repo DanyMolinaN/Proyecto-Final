@@ -44,7 +44,7 @@ sub schema {
                 [show_external_zigzag => 'External ZigZag'],
                 [show_internal_swings => 'Internal Swings'],
                 [show_external_swings => 'External Swings'],
-                [show_trendline       => 'Trendline'],
+                [show_trend_channel       => 'Trendline'],
             ],
         },
         {
