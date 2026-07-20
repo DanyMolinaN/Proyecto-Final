@@ -72,11 +72,13 @@ sub draw {
 
         my $cw = $scale->index_to_center_x(1) - $scale->index_to_center_x(0);
         my $half = $cw > 0 ? $cw / 2 : 2;
-        my $x1 = $scale->index_to_center_x($idx) - $half;
+        my $visual_idx = $idx + 1;
+        my $x1 = $scale->index_to_center_x($visual_idx) - $half;
         
         my $draw_end = $block->{invalidated_index} // $block->{mitigated_index} // $end_idx // ($idx + 50);
-        $draw_end = $end_idx if defined $end_idx && $draw_end > $end_idx;
-        my $x2 = $scale->index_to_center_x($draw_end) + $half;
+        my $visual_draw_end = $draw_end + 1;
+        $visual_draw_end = $end_idx if defined $end_idx && $visual_draw_end > $end_idx;
+        my $x2 = $scale->index_to_center_x($visual_draw_end) + $half;
         $x2 = $x1 + ($half * 2) if $x2 <= $x1;
         
         my $high = $block->{high} // $price;

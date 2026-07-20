@@ -150,11 +150,9 @@ sub apply_structure_filter {
         }
     }
 
-    my @kept_eq = grep {
-        $_ && ref $_ eq 'HASH'
-        && (defined $_->{first_index} || defined $_->{second_index})
-        && ($validated{ $_->{first_index} } || $validated{ $_->{second_index} })
-    } @{ $self->{eq_levels} || [] };
+    # Opción B: No filtrar EQH/EQL por jerarquía de estructura (Major/Intermediate).
+    # Un Equal High/Low es un patrón de precio válido sin importar la jerarquía.
+    my @kept_eq = @{ $self->{eq_levels} || [] };
 
     my $candles = $args{candles};
     if (!$candles && $market_data) {

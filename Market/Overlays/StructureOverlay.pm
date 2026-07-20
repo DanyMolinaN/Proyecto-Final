@@ -217,7 +217,7 @@ sub draw {
         unless (defined $anchor_y) { $discarded_invalid++; next; }
 
         my $label = _event_label($point);
-        next unless _show_event_label($settings, $label);
+        next unless _show_event_label($settings, $label, $point->{scope});
         my ($fg, $bg) = _event_style($point, $self->{style});
 
         my ($span_x1, $span_x2, $span_y) = _event_span($point, $scale, $level, $idx, $anchor_y);
@@ -258,10 +258,15 @@ sub draw {
             fg         => $fg,
             bg         => $bg,
             span       => ($has_span ? {
-                x1 => $span_x1,
-                x2 => $span_x2,
-                y  => $span_y,
+                x1      => $span_x1,
+                x2      => $span_x2,
+                y       => $span_y,
                 break_x => $is_break ? $scale->index_to_center_x($idx) : undef,
+                # BOS interno: trazo entrecortado (dashed); externo: solido.
+                # CHoCH y EQH/EQL no llevan dash (no son BOS).
+                dash    => ($is_break && $label =~ /^BOS/i
+                            && ($point->{scope} // 'external') eq 'internal')
+                           ? [6, 4] : undef,
             } : undef),
             fixed_position => $has_span ? 1 : 0,
             no_group       => $has_span ? 1 : 0,
@@ -357,8 +362,34 @@ sub _show_swing_label {
 }
 
 sub _show_event_label {
-    my ($settings, $label) = @_;
-    return _enabled($settings, 'show_bos') if $label =~ /^BOS/i;
+    my ($settings, $label, $scope) = @_;
+    if ($label =~ /^BOS/i) {
+        # Puerta genérica: si show_bos está OFF, ocultar todos los BOS.
+        return 0 unless _enabled($settings, 'show_bos');
+        # Puerta por scope: show_bos_external / show_bos_internal.
+        # Si el flag específico no existe en settings (clave desconocida),
+        # _enabled() devuelve 0, lo que ocultaría el label. Para evitar
+        # regresión cuando el archivo .overlay_settings es viejo y no tiene
+        # aún estas claves, hacemos fallback a 1 (mostrar) si la clave
+        # no está registrada (enabled returns 0 for unknown keys, pero
+        # _default_values ya los registra — así que en runtime nuevo siempre
+        # están). La lógica queda: si el flag de scope existe y está OFF,
+        # ocultar; si el flag de scope no existe (settings viejo), mostrar.
+        $scope //= 'external';
+        my $scope_key = $scope eq 'internal' ? 'show_bos_internal' : 'show_bos_external';
+        # Verificar si la clave existe en settings antes de consultar:
+        # _enabled devuelve 0 para claves desconocidas; usamos eso como
+        # "no configurado" solo si settings puede reportar si la clave existe.
+        # En la implementación actual de OverlaySettings, claves desconocidas
+        # devuelven 0 porque no están en _default_values. Como las agregamos
+        # en _default_values, el flag siempre existe en runtime nuevo.
+        # Para mayor robustez: si settings no puede 'enabled', retornar 1.
+        if ($settings && $settings->can('values')) {
+            my $vals = $settings->values();
+            return 0 unless !exists($vals->{$scope_key}) || $vals->{$scope_key};
+        }
+        return 1;
+    }
     return _enabled($settings, 'show_choch') if $label =~ /^CHoCH/i;
     return 1;
 }
@@ -453,16 +484,21 @@ sub _draw_event_span {
     my $span = $item->{span};
     return unless defined $span->{x1} && defined $span->{x2} && defined $span->{y};
     my $fg = $item->{fg} || '#d8dee9';
-    $canvas->createLine($span->{x1}, $span->{y}, $span->{x2}, $span->{y},
-        -fill => $fg,
+
+    my @line_args = (
+        $span->{x1}, $span->{y}, $span->{x2}, $span->{y},
+        -fill  => $fg,
         -width => 1,
-        -tags => ['overlay_structure'],
+        -tags  => ['overlay_structure'],
     );
+    push @line_args, (-dash => $span->{dash}) if defined $span->{dash};
+    $canvas->createLine(@line_args);
+
     if (defined $span->{break_x}) {
         $canvas->createLine($span->{break_x}, $span->{y} - 4, $span->{break_x}, $span->{y} + 4,
-            -fill => $fg,
+            -fill  => $fg,
             -width => 1,
-            -tags => ['overlay_structure'],
+            -tags  => ['overlay_structure'],
         );
     }
 }

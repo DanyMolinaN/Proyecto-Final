@@ -150,12 +150,11 @@ sub draw {
             next unless _y_in_clip($y, $clip_y_top, $clip_y_bottom);
             my $xm       = ($x1 + $x2) / 2;
 
-            $canvas->createLine($x1, $y, $x2, $y,
-                -fill => $fill, -width => 2, -dash => [4, 3], -tags => ['overlay_liquidity_dynamic']);
             push @labels, {
                 index      => $second_idx,
                 x_base     => $xm,
                 y_base     => $y,
+                line       => { x1 => $x1, x2 => $x2, y => $y },
                 text       => $eq->{type} || 'EQ',
                 anchor     => 'c',
                 fill       => $fill,
@@ -295,6 +294,12 @@ sub draw {
             _draw_tag($canvas, $item, $self->{style});
         }
         elsif ($item->{type} && $item->{type} eq 'eq') {
+            my $line = $item->{line};
+            if ($line) {
+                $canvas->createLine($line->{x1}, $line->{y}, $line->{x2}, $line->{y},
+                    -fill => $item->{fill}, -width => 2, -dash => [4, 3], -tags => ['overlay_liquidity_dynamic']);
+            }
+            # Draw the label tag as well, centered on the line
             _draw_tag($canvas, $item, $self->{style});
         }
         else {
@@ -498,9 +503,9 @@ sub _liquidity_y_offset {
 
 sub _eq_color {
     my ($type) = @_;
-    return '#9c27b0' if defined $type && $type eq 'EQH';
-    return '#7b1fa2' if defined $type && $type eq 'EQL';
-    return '#9c27b0';
+    return '#42a5f5' if defined $type && $type eq 'EQH'; # Blue/celeste
+    return '#ef5350' if defined $type && $type eq 'EQL'; # Red
+    return '#42a5f5';
 }
 
 sub _event_y_offset {

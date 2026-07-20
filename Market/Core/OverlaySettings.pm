@@ -23,16 +23,18 @@ sub schema {
         {
             id => 'price_action', label => 'Price Action',
             options => [
-                [show_swing_high => 'Swing High'],
-                [show_swing_low  => 'Swing Low'],
-                [show_hh         => 'HH'],
-                [show_hl         => 'HL'],
-                [show_lh         => 'LH'],
-                [show_ll         => 'LL'],
-                [show_bos        => 'BOS'],
-                [show_choch      => 'CHOCH'],
-                [show_eqh        => 'EQH'],
-                [show_eql        => 'EQL'],
+                [show_swing_high     => 'Swing High'],
+                [show_swing_low      => 'Swing Low'],
+                [show_hh             => 'HH'],
+                [show_hl             => 'HL'],
+                [show_lh             => 'LH'],
+                [show_ll             => 'LL'],
+                [show_bos            => 'BOS'],
+                [show_bos_external   => 'BOS externo'],
+                [show_bos_internal   => 'BOS interno'],
+                [show_choch          => 'CHOCH'],
+                [show_eqh            => 'EQH'],
+                [show_eql            => 'EQL'],
             ],
         },
         {
@@ -42,6 +44,7 @@ sub schema {
                 [show_external_zigzag => 'External ZigZag'],
                 [show_internal_swings => 'Internal Swings'],
                 [show_external_swings => 'External Swings'],
+                [show_trendline       => 'Trendline'],
             ],
         },
         {
@@ -149,6 +152,9 @@ sub _default_values {
     $values{show_volume_profile}    = 0;
     $values{show_signals}           = 0;  # sin overlay registrado
     $values{show_entries}           = 0;  # sin overlay registrado
+    # BOS externo/interno: default ON para preservar comportamiento previo
+    $values{show_bos_external}      = 1;
+    $values{show_bos_internal}      = 1;
     return \%values;
 }
 

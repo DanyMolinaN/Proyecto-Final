@@ -50,6 +50,8 @@ use Market::Concepts::FibonacciEngine;
 use Market::Overlays::FibonacciOverlay;
 use Market::Strategies::Indicators::SupplyDemand;
 use Market::Overlays::SupplyDemandOverlay;
+use Market::Indicators::TrendLine;
+use Market::Overlays::TrendLineOverlay;
 
 sub new {
     my ($class, %args) = @_;
@@ -122,6 +124,7 @@ sub new {
     my $anchored_vwap = $args{anchored_vwap} || Market::Volume::AnchoredVWAP->new();
     my $fibonacci_engine = $args{fibonacci_engine} || Market::Concepts::FibonacciEngine->new();
     my $supply_demand_engine = $args{supply_demand_engine} || Market::Strategies::Indicators::SupplyDemand->new();
+    my $trendline_engine = $args{trendline_engine} || Market::Indicators::TrendLine->new();
 
     my $overlay_settings = $args{overlay_settings} || Market::Core::OverlaySettings->new();
 
@@ -147,6 +150,9 @@ sub new {
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
     my $supply_demand_overlay = Market::Overlays::SupplyDemandOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
+    my $trendline_overlay = Market::Overlays::TrendLineOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
 
@@ -181,6 +187,8 @@ sub new {
         anchored_vwap_overlay => $anchored_vwap_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
         supply_demand_overlay => $supply_demand_overlay,
+        trendline_engine     => $trendline_engine,
+        trendline_overlay    => $trendline_overlay,
         width                => $width,
         height               => $height,
         price_height         => $price_height,
@@ -921,6 +929,7 @@ sub _sync_overlay_layer_state {
     # enable()/disable() con nombre desconocido retorna 0 sin crashear.
     my $fibonacci_on      = $s->enabled('show_fibonacci');
     my $supply_demand_on  = $s->enabled('show_supply_demand');
+    my $trendline_on      = $s->enabled('show_trendline');
 
     for my $pair (
         [structure     => $structure_on],
@@ -931,6 +940,7 @@ sub _sync_overlay_layer_state {
         [anchored_vwap => $anchored_vwap_on],
         [fibonacci     => $fibonacci_on],
         [supply_demand => $supply_demand_on],
+        [trendline     => $trendline_on],
     ) {
         my ($name, $on) = @$pair;
         if ($on) {
@@ -967,6 +977,7 @@ sub _key_to_overlay_map {
         show_external_zigzag    => 'structure',
         show_internal_swings    => 'structure',
         show_external_swings    => 'structure',
+        show_trendline          => 'trendline',
         # Liquidity → liquidity overlay
         show_liquidity_levels   => 'liquidity',
         show_internal_liquidity => 'liquidity',
@@ -2237,6 +2248,7 @@ sub _register_overlays {
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
         [fibonacci       => $self->{fibonacci_overlay}],
         [supply_demand   => $self->{supply_demand_overlay}],
+        [trendline       => $self->{trendline_overlay}],
     );
 
     for my $entry (@overlays) {
@@ -2258,7 +2270,7 @@ sub _register_overlays {
 sub invalidate_analysis_cache {
     my ($self) = @_;
     $self->{analysis_cache} = undef;
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trendline_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2290,7 +2302,7 @@ sub rebuild_analysis_cache {
         view_end          => $view_end,
     );
 
-    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine)) {
+    for my $key (qw(liquidity_engine structure_engine fvg_engine orderblock_engine smc_structure_engine volume_profile_engine anchored_vwap fibonacci_engine supply_demand_engine trendline_engine)) {
         my $eng = $self->{$key};
         $eng->reset() if $eng && $eng->can('reset');
     }
@@ -2333,6 +2345,9 @@ sub rebuild_analysis_cache {
     my $supply_demand_data = $self->{supply_demand_engine}->calculate(
         $self->{market_data}, %engine_args,
     );
+    my $trendline_data = $self->{trendline_engine}->calculate(
+        $self->{market_data}, source_swings => $structure_data->{external_swings}, %engine_args,
+    );
 
     $self->{analysis_cache} = {
         liquidity      => $liquidity_data,
@@ -2344,6 +2359,7 @@ sub rebuild_analysis_cache {
         anchored_vwap  => $anchored_vwap_data,
         fibonacci      => $fibonacci_data,
         supply_demand  => { active => $supply_demand_data->{zones} },
+        trendline      => $trendline_data,
     };
     return $self->{analysis_cache};
 }
@@ -2396,6 +2412,7 @@ sub _prepare_overlay_data {
     my $anchored_vwap_data = $cache->{anchored_vwap};
     my $fibonacci_data = $cache->{fibonacci};
     my $supply_demand_data = $cache->{supply_demand};
+    my $trendline_data = $cache->{trendline};
 
     my $overlay_names = {
         liquidity      => $liquidity_data,
@@ -2406,6 +2423,7 @@ sub _prepare_overlay_data {
         anchored_vwap  => $anchored_vwap_data,
         fibonacci      => $fibonacci_data,
         supply_demand  => $supply_demand_data,
+        trendline      => $trendline_data,
     };
 
     for my $name (keys %$overlay_names) {
