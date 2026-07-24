@@ -44,9 +44,9 @@ sub _replay_warn {
 sub _replay_debug_log {
     my ($self, $action) = @_;
     my $rc = $self->{replay_controller};
-    my $current = ($rc && defined $rc->{current_index}) ? $rc->{current_index} : 'undef';
-    my $playing = ($rc && $rc->{playing}) ? 1 : 0;
-    my $enabled = ($rc && $rc->{enabled}) ? 1 : 0;
+    my $current = ($self->{market_data} && $self->{market_data}->can('last_index')) ? $self->{market_data}->last_index() : 'undef';
+    my $playing = ($rc && $rc->is_playing()) ? 1 : 0;
+    my $enabled = ($rc && $rc->is_active()) ? 1 : 0;
     warn "[Replay][$action] current_index=$current playing=$playing enabled=$enabled\n";
 }
 
@@ -166,18 +166,22 @@ sub _replay_sync_speed_buttons {
 sub _replay_start_at_index {
     my ($self, $idx, $autoplay) = @_;
     return unless $self->{market_data} && $self->{replay_controller};
-    my $total = $self->{market_data}->size();
+    my $total = $self->{market_data}->raw_last_index() + 1;
     return unless $total > 0;
+    
     $idx = 0 unless defined $idx;
     $idx = 0 if $idx < 0;
     $idx = $total - 1 if $idx >= $total;
 
+    my $candle = $self->{market_data}->raw_get_candle($idx);
+    return unless $candle;
+
     $self->_cancel_replay_timer();
-    $self->{replay_controller}->enter_replay($idx, $total);
+    $self->{replay_controller}->start($candle->{timestamp});
     $self->{_replay_select_mode} = 0;
+    
     if ($autoplay && $idx < $total - 1) {
         $self->{replay_controller}->play();
-        $self->_replay_schedule_tick();
     }
     $self->_replay_apply();
     return $self;
@@ -208,7 +212,7 @@ sub _replay_enter {
     my ($self) = @_;
     return $self->_replay_run_handler('enter', sub {
         return unless $self->{market_data} && $self->{replay_controller};
-        my $total = $self->{market_data}->size();
+        my $total = $self->{market_data}->raw_last_index() + 1;
         return unless $total > 0;
 
         my $idx = $self->{crosshair_idx};
@@ -241,82 +245,75 @@ sub _replay_toggle_play {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
-        if ($rc->{playing}) {
+        if ($rc->is_playing()) {
             $rc->pause();
             $self->_cancel_replay_timer();
             $self->render();
             return;
         }
 
-        my $total = $self->{market_data}->size();
+        my $total = $self->{market_data}->raw_last_index() + 1;
         return unless $total > 0;
-        return if $rc->{current_index} >= $total - 1;
+        my $current = $self->{market_data}->last_index();
+        return if $current >= $total - 1;
 
         $rc->play();
         $self->_replay_apply();
-        $self->_replay_schedule_tick();
     });
 }
 
-# _replay_set_speed($speed)
-# Cambia el multiplicador de reproduccion (0.25x .. 10x, estilo TradingView).
-# El siguiente tick programado en _replay_schedule_tick ya lee {speed} en vivo,
-# asi que el cambio se aplica de inmediato sin reiniciar el timer.
 sub _replay_set_speed {
     my ($self, $speed) = @_;
     return $self->_replay_run_handler('set_speed', sub {
         return unless $self->{replay_controller};
         $self->{_replay_speed_var} = $speed;
-        $self->{replay_controller}->set_speed($speed);
+        $self->{replay_controller}->set_speed($speed) if $self->{replay_controller}->can('set_speed');
         $self->_replay_sync_speed_buttons();
         $self->render();
     });
 }
 
-# _replay_seek_scale_changed($value)
-# Callback del slider de recorrido: permite saltar directo a cualquier vela
-# del historico (scrubbing), igual que la barra de Replay de TradingView.
-# Al arrastrar, se pausa automaticamente (si estaba en play) para no pelear
-# con el timer de auto-avance.
 sub _replay_seek_scale_changed {
     my ($self, $val) = @_;
     return if $self->{_replay_scale_updating};
     return $self->_replay_run_handler('seek', sub {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active() && $self->{market_data};
-        my $total = $self->{market_data}->size();
+        my $total = $self->{market_data}->raw_last_index() + 1;
         return unless $total > 0;
 
         my $target = int($val + 0.5);
         $target = 0 if $target < 0;
         $target = $total - 1 if $target >= $total;
-        return if defined $rc->{current_index} && $target == $rc->{current_index};
+        
+        my $current = $self->{market_data}->last_index();
+        return if defined $current && $target == $current;
 
         $rc->pause();
         $self->_cancel_replay_timer();
-        $rc->seek($target, $total);
+        
+        my $candle = $self->{market_data}->raw_get_candle($target);
+        if ($candle) {
+            $rc->start($candle->{timestamp});
+        }
         $self->_replay_apply();
     });
 }
 
-# _replay_sync_controls()
-# Refleja el estado actual del ReplayController en el slider de recorrido:
-# rango habilitado/deshabilitado segun si el replay esta activo, y posicion
-# actualizada en cada tick/step/seek. Usa un flag de guarda para no disparar
-# _replay_seek_scale_changed de vuelta cuando el valor se fija programaticamente.
 sub _replay_sync_controls {
     my ($self) = @_;
     my $scale = $self->{_replay_scale};
     return unless $scale;
 
     my $rc    = $self->{replay_controller};
-    my $total = $self->{market_data} ? $self->{market_data}->size() : 0;
+    my $total = $self->{market_data} ? ($self->{market_data}->raw_last_index() + 1) : 0;
 
     if ($rc && $rc->is_active() && $total > 0) {
         $scale->configure(-state => 'normal', -from => 0, -to => $total - 1);
         $self->{_replay_scale_updating} = 1;
         local $@;
-        eval { $scale->set($rc->{current_index} // 0); };
+        my $current = $self->{market_data}->last_index() // 0;
+        eval { $scale->set($current); };
         $self->{_replay_scale_updating} = 0;
     }
     else {
@@ -336,10 +333,9 @@ sub _replay_step_forward {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
-        my $total = $self->{market_data}->size();
         $rc->pause();
         $self->_cancel_replay_timer();
-        $rc->step_forward($total);
+        $rc->step_forward();
         $self->_replay_apply();
     });
 }
@@ -363,56 +359,17 @@ sub _replay_fast_forward {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
-        my $total = $self->{market_data}->size();
         $rc->pause();
         $self->_cancel_replay_timer();
-        $rc->fast_forward(10, $total);
+        $rc->fast_forward();
         $self->_replay_apply();
     });
 }
 
 sub _replay_schedule_tick {
     my ($self) = @_;
-    my $rc = $self->{replay_controller};
-    return unless $rc && $rc->{playing} && $self->{canvas};
-    $self->_cancel_replay_timer();
-
-    my $total = $self->{market_data}->size();
-    if ($total <= 0 || $rc->{current_index} >= $total - 1) {
-        $rc->stop();
-        local $@;
-        my $ok = eval {
-            $self->render();
-            1;
-        };
-        $self->_replay_warn('schedule_tick/render_stop', $@) unless $ok;
-        $self->_replay_safe_sync_controls('schedule_tick/render_stop');
-        $self->_replay_debug_log('schedule_tick/render_stop');
-        return;
-    }
-
-    my $speed = $rc->{speed} || 1;
-    my $delay = int(400 / $speed);
-    $delay = 16 if $delay < 16;
-
-    $self->{_replay_after} = $self->{canvas}->after($delay, sub {
-        $self->{_replay_after} = undef;
-        $self->_replay_run_handler('tick', sub {
-            my $r = $self->{replay_controller};
-            return unless $r && $r->{playing};
-
-            my $n = $self->{market_data}->size();
-            if ($n <= 0 || $r->{current_index} >= $n - 1) {
-                $r->stop();
-                $self->render();
-                return;
-            }
-
-            $r->step_forward($n);
-            $self->_replay_apply();
-            $self->_replay_schedule_tick();
-        });
-    });
+    # Deprecated: Market::Replay uses its own loop via the 'schedule' callback.
+    return $self;
 }
 
 # ── Redimensionado ────────────────────────────────────────────────────────────

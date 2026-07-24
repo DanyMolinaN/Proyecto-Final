@@ -30,13 +30,13 @@ sub build_control_panel {
     )->pack(-side => 'left', -padx => 4);
 
     my @replay_btns = (
-        ['Seleccionar', sub { $self->_replay_select_start(); }],
-        ['Inicio',  sub { $self->_replay_enter(); }],
-        ['Play/Pausa', sub { $self->_replay_toggle_play(); }],
-        ['<<',      sub { $self->_replay_step_backward(); }],
-        ['>>',      sub { $self->_replay_step_forward(); }],
-        ['FF >>',   sub { $self->_replay_fast_forward(); }],
-        ['Salir',   sub { $self->_replay_exit(); }],
+        ['Select', sub { $self->_replay_select_start(); }],
+        ['|< Start',  sub { $self->_replay_enter(); }],
+        ['< Step',      sub { $self->_replay_step_backward(); }],
+        ['Play / ||', sub { $self->_replay_toggle_play(); }],
+        ['Step >',      sub { $self->_replay_step_forward(); }],
+        ['Fast >>',   sub { $self->_replay_fast_forward(); }],
+        ['Exit [x]',   sub { $self->_replay_exit(); }],
     );
     for my $btn (@replay_btns) {
         $replay_frame->Button(
@@ -431,6 +431,26 @@ sub set_overlay_option {
     my ($self, $key, $enabled) = @_;
     return unless $self->{overlay_settings};
     $self->{overlay_settings}->set($key, $enabled);
+
+    # ── VWAP mutual exclusion ────────────────────────────────────────────────
+    # Dynamic VWAP y Anchored VWAP son mutuamente excluyentes en el panel:
+    # activar uno desactiva el otro tanto en el setting interno como en el
+    # checkbox visual (-variable bindeado a _overlay_vars).
+    if ($enabled) {
+        my $other_key;
+        if    ($key eq 'show_dynamic_vwap')   { $other_key = 'show_anchored_vwap'; }
+        elsif ($key eq 'show_anchored_vwap')  { $other_key = 'show_dynamic_vwap';  }
+
+        if ($other_key) {
+            $self->{overlay_settings}->set($other_key, 0);
+            # Actualizar la variable Perl a la que el Checkbutton esta bindeado
+            # para que la UI refleje el estado desmarcado sin otro click.
+            $self->{_overlay_vars}{$other_key} = 0
+                if exists $self->{_overlay_vars}{$other_key};
+        }
+    }
+    # ────────────────────────────────────────────────────────────────────────
+
     $self->{overlay_settings}->save() if $self->{overlay_settings}->can('save');
     $self->_sync_overlay_layer_state();
     $self->render();

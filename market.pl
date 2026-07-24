@@ -31,7 +31,7 @@ use Market::Core::EngineRegistry;
 # --- Indicadores de vela (calculo incremental) ---
 use Market::Indicators::ATR;
 use Market::Indicators::ZigZagMTF;
-use Market::Indicators::ZigZagVolumeProfile;
+use Market::Indicators::AnchoredVolumeProfile;
 use Market::Indicators::TrendChannel;
 use Market::Indicators::TrailingExtremes;
 
@@ -146,12 +146,12 @@ for my $tf (keys %mtf_resolutions) {
 }
 
 # 4. ZigZag Volume Profile (mayor grado que zigzag_mtf).
-my $zigzag_vp = Market::Indicators::ZigZagVolumeProfile->new(
-    period       => 8,
-    bins         => 10,
-    max_profiles => 15,
+my $anchored_vp = Market::Indicators::AnchoredVolumeProfile->new(
+    mode         => 'auto',
+    pivot_length => 50,
+    bin_atr_mult => 1.0,
 );
-$indicator_manager->register('zigzag_vp', $zigzag_vp);
+$indicator_manager->register('anchored_vp', $anchored_vp);
 
 # 5. TrendChannel (usa swings del SMC; se recalcula via EngineRegistry).
 my $trend_channel_engine = Market::Indicators::TrendChannel->new();
@@ -173,7 +173,7 @@ my $engine_registry = Market::Core::EngineRegistry->new();
 my $liquidity_engine = Market::Indicators::Liquidity->new(
     atr   => $atr_indicator,
     zzmtf => $indicator_manager->get('zigzag_mtf_15m'),
-    zzvp  => $zigzag_vp,
+    zzvp  => $anchored_vp,
 );
 $engine_registry->register('liquidity', $liquidity_engine);
 
@@ -273,19 +273,36 @@ $engine_registry->register('premium_discount', $premium_discount_engine,
 
 # ── Engines completamente independientes ───────────────────────────────────
 
-my $volume_profile_engine = Market::Volume::VolumeProfileEngine->new(
-    bins         => 10,
-    max_profiles => 15,
+use Market::Indicators::AnchoredVolumeProfile;
+my $volume_profile_engine = Market::Indicators::AnchoredVolumeProfile->new(
+    mode => 'auto', pivot_length => 50, bin_atr_mult => 1.0, row_mode => 'atr'
 );
-$engine_registry->register('volume_profile', $volume_profile_engine);
+$engine_registry->register('volume_profile', $volume_profile_engine, calc => sub {
+    my ($eng, $md, $cache, %args) = @_;
+    $eng->reset();
+    my $last = $md->size - 1;
+    for my $i (0 .. $last) {
+        $eng->update_at_index($md, $i);
+    }
+    return $eng->get_profile(0.70);
+});
 
-use Market::Volume::AnchoredVWAP;
-my $anchored_vwap_engine = Market::Volume::AnchoredVWAP->new();
-$engine_registry->register('anchored_vwap', $anchored_vwap_engine);
+use Market::Indicators::AnchoredVWAP;
+my $anchored_vwap_engine = Market::Indicators::AnchoredVWAP->new(
+    mode => 'manual'
+);
+$engine_registry->register('anchored_vwap', $anchored_vwap_engine, calc => sub {
+    my ($eng, $md, $cache, %args) = @_;
+    $eng->reset();
+    my $last = $md->size - 1;
+    for my $i (0 .. $last) {
+        $eng->update_at_index($md, $i);
+    }
+    return $eng->get_series();
+});
 
-use Market::Concepts::DSVWAP::Engine;
-
-my $dsvwap_engine = Market::Concepts::DSVWAP::Engine->new();
+use Market::Concepts::DSVWAP::ModularEngine;
+my $dsvwap_engine = Market::Concepts::DSVWAP::ModularEngine->new();
 $engine_registry->register('dynamic_vwap', $dsvwap_engine);
 
 my $supply_demand_engine = Market::Strategies::Indicators::SupplyDemand->new();

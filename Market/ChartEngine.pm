@@ -34,7 +34,7 @@ use Market::MarketData;
 use Market::Core::OverlayManager;
 use Market::Core::OverlaySettings;
 use Market::Core::EngineRegistry;       # <-- registro ordenado de engines
-use Market::Core::ReplayController;
+use Market::Replay;
 use Market::Core::TimeframeManager;
 use Market::Core::ViewportController;
 use Market::Core::YAxisHitTest;
@@ -177,7 +177,15 @@ sub new {
         engine_registry      => $engine_registry,      # <-- unica fuente de engines
         overlay_manager      => $args{overlay_manager} || Market::Core::OverlayManager->new(),
         overlay_settings     => $overlay_settings,
-        replay_controller    => $args{replay_controller} || Market::Core::ReplayController->new(),
+        replay_controller    => $args{replay_controller} || Market::Replay->new(
+            market     => $market_data,
+            indicators => $indicator_manager,
+            schedule   => sub {
+                my ($delay_ms, $cb) = @_;
+                return unless $canvas;
+                $canvas->after($delay_ms, $cb);
+            },
+        ),
         timeframe_manager    => $args{timeframe_manager} || Market::Core::TimeframeManager->new(),
         viewport_controller  => $args{viewport_controller} || Market::Core::ViewportController->new(),
         price_panel          => $args{price_panel} || Market::Panels::PricePanel->new(),
@@ -244,7 +252,7 @@ sub new {
     $self->{price_panel}->set_scale($price_scale);
     $self->{atr_panel}->set_scale($atr_scale);
     $self->{overlay_manager}->initialize() if $self->{overlay_manager} && $self->{overlay_manager}->can('initialize');
-    $self->{replay_controller}->initialize() if $self->{replay_controller} && $self->{replay_controller}->can('initialize');
+
     $self->{timeframe_manager}->initialize() if $self->{timeframe_manager} && $self->{timeframe_manager}->can('initialize');
     $self->{viewport_controller}->initialize() if $self->{viewport_controller} && $self->{viewport_controller}->can('initialize');
     $self->_register_overlays();
@@ -255,6 +263,16 @@ sub new {
     $self->{candle_width} = $candle_width;
     # Carga inicial de datos: construye la cache de analisis una sola vez, para
     # que el primer (y todos los) render() solo consuma resultados cacheados.
+    if ($self->{replay_controller} && $self->{replay_controller}->can('set_on_change')) {
+        $self->{replay_controller}->set_on_change(sub {
+            $self->_replay_apply();
+        });
+    } else {
+        $self->{replay_controller}->{on_change} = sub {
+            $self->_replay_apply();
+        };
+    }
+    
     $self->rebuild_analysis_cache();
     $self->_replay_sync_controls();
     return $self;

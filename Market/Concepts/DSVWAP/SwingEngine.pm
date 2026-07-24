@@ -58,15 +58,17 @@ sub _check_pivot_high {
     return undef unless $candidate;
     my $candidate_high = $candidate->{high};
 
-    for my $k (($c - $len) .. ($c - 1)) {
+    my $max_h;
+    for my $k (($c - $len) .. ($c + $len)) {
         my $k_candle = $market_data->get_candle($k);
-        return undef if $k_candle && $k_candle->{high} >= $candidate_high;
+        next unless $k_candle;
+        $max_h = $k_candle->{high} if !defined($max_h) || $k_candle->{high} > $max_h;
     }
-    for my $k (($c + 1) .. ($c + $len)) {
-        my $k_candle = $market_data->get_candle($k);
-        return undef if $k_candle && $k_candle->{high} >= $candidate_high;
+    
+    if (defined $max_h && $candidate_high == $max_h) {
+        return $candidate_high;
     }
-    return $candidate_high;
+    return undef;
 }
 
 sub _check_pivot_low {
@@ -75,15 +77,17 @@ sub _check_pivot_low {
     return undef unless $candidate;
     my $candidate_low = $candidate->{low};
 
-    for my $k (($c - $len) .. ($c - 1)) {
+    my $min_l;
+    for my $k (($c - $len) .. ($c + $len)) {
         my $k_candle = $market_data->get_candle($k);
-        return undef if $k_candle && $k_candle->{low} <= $candidate_low;
+        next unless $k_candle;
+        $min_l = $k_candle->{low} if !defined($min_l) || $k_candle->{low} < $min_l;
     }
-    for my $k (($c + 1) .. ($c + $len)) {
-        my $k_candle = $market_data->get_candle($k);
-        return undef if $k_candle && $k_candle->{low} <= $candidate_low;
+    
+    if (defined $min_l && $candidate_low == $min_l) {
+        return $candidate_low;
     }
-    return $candidate_low;
+    return undef;
 }
 
 1;

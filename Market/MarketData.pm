@@ -17,11 +17,13 @@ use warnings;
 sub new {
     my ($class) = @_;
     my $self = {
-        data          => { "1m" => [] },
-        active_tf     => "1m",
-        time_anchors  => [],
-        _last_ts      => {},    # Ultimo timestamp visto por temporalidad (dedup)
-        tz_offset     => 0,     # Offset (segundos) de la zona del mercado vs UTC
+        data                  => { "1m" => [] },
+        active_tf             => "1m",
+        time_anchors          => [],
+        _last_ts              => {},    # Ultimo timestamp visto por temporalidad (dedup)
+        tz_offset             => 0,     # Offset (segundos) de la zona del mercado vs UTC
+        _replay_boundary      => undef, # Timestamp (epoch) limite del modo replay
+        _effective_last_index => {},    # Indice maximo visible por TF (cache)
     };
     bless $self, $class;
     return $self;
@@ -163,6 +165,7 @@ sub build_tf_candles {
     push @out, $bucket if $bucket;
 
     $self->{data}->{$tf} = \@out;
+    $self->_recalc_effective_indices() if defined $self->{_replay_boundary};
     return \@out;
 }
 
@@ -199,6 +202,7 @@ sub set_timeframe {
     else {
         warn "Timeframe '$tf' no tiene datos.";
     }
+    $self->_recalc_effective_indices() if defined $self->{_replay_boundary};
 }
 
 # active_tf() -> $tf
@@ -217,46 +221,77 @@ sub _active_array {
 
 # get_slice($start, $end) -> \@candles
 # Devuelve un subconjunto de velas [start..end] de la temporalidad activa.
-# Acota indices fuera de rango.
+# Acota indices fuera de rango y respeta la frontera de replay.
 sub get_slice {
     my ($self, $start, $end) = @_;
     my $arr = $self->_active_array();
     return [] unless @$arr;
 
-    $start = 0          if !defined $start || $start < 0;
-    $end   = $#$arr     if !defined $end   || $end   > $#$arr;
-    return []           if $start > $end;
+    if (defined $self->{_replay_boundary}) {
+        my $eff_last = $self->{_effective_last_index}{$self->{active_tf}} // -1;
+        $end = $eff_last if !defined $end || $end > $eff_last;
+    } else {
+        $end = $#$arr if !defined $end || $end > $#$arr;
+    }
+
+    $start = 0 if !defined $start || $start < 0;
+    return []  if $start > $end;
 
     return [ @{$arr}[$start .. $end] ];
 }
 
 # get_candle($index) -> \%candle | undef
-# Obtiene una vela por indice de la temporalidad activa.
+# Obtiene una vela por indice de la temporalidad activa (respetando replay).
 sub get_candle {
     my ($self, $index) = @_;
     return unless defined $index;
+    if (defined $self->{_replay_boundary}) {
+        my $eff_last = $self->{_effective_last_index}{$self->{active_tf}} // -1;
+        return if $index > $eff_last;
+    }
     return $self->_active_array()->[$index];
 }
 
 # size() -> $n
-# Numero total de velas de la temporalidad activa.
+# Numero total de velas de la temporalidad activa visibles.
 sub size {
     my ($self) = @_;
+    if (defined $self->{_replay_boundary}) {
+        my $idx = $self->{_effective_last_index}{$self->{active_tf}};
+        return defined $idx ? $idx + 1 : 0;
+    }
     return scalar @{ $self->_active_array() };
 }
 
 # last_candle() -> \%candle
-# Devuelve la ultima vela de la temporalidad activa.
+# Devuelve la ultima vela de la temporalidad activa visible.
 sub last_candle {
     my ($self) = @_;
-    return $self->_active_array()->[-1];
+    my $idx = $self->last_index();
+    return undef if $idx < 0;
+    return $self->_active_array()->[$idx];
 }
 
 # last_index() -> $index
-# Indice de la ultima vela (size - 1).
+# Indice de la ultima vela visible (size - 1).
 sub last_index {
     my ($self) = @_;
     return $self->size() - 1;
+}
+
+# raw_last_index() -> $index
+# Indice real de la ultima vela de la temporalidad activa (ignorando replay).
+sub raw_last_index {
+    my ($self) = @_;
+    return (scalar @{ $self->_active_array() }) - 1;
+}
+
+# raw_get_candle($index) -> \%candle | undef
+# Obtiene una vela por indice real de la temporalidad activa (ignorando replay).
+sub raw_get_candle {
+    my ($self, $index) = @_;
+    return unless defined $index;
+    return $self->_active_array()->[$index];
 }
 
 # get_timestamp($index) -> $epoch | undef
@@ -323,6 +358,52 @@ sub get_time_anchors {
     my ($self) = @_;
     return $self->{time_anchors} if @{ $self->{time_anchors} };
     return $self->compute_time_anchors();
+}
+
+# -----------------------------------------------------------------------------
+# Metodos para Market::Replay
+# -----------------------------------------------------------------------------
+
+sub set_replay_boundary {
+    my ($self, $ts) = @_;
+    $self->{_replay_boundary} = $ts;
+    $self->_recalc_effective_indices();
+}
+
+sub get_replay_boundary {
+    my ($self) = @_;
+    return $self->{_replay_boundary};
+}
+
+sub clear_replay_boundary {
+    my ($self) = @_;
+    $self->{_replay_boundary} = undef;
+    $self->{_effective_last_index} = {};
+}
+
+sub _recalc_effective_indices {
+    my ($self) = @_;
+    return unless defined $self->{_replay_boundary};
+    my $ts = $self->{_replay_boundary};
+    
+    for my $tf (keys %{$self->{data}}) {
+        my $arr = $self->{data}{$tf};
+        my $idx = -1;
+        if ($arr && @$arr) {
+            my $low = 0;
+            my $high = $#$arr;
+            while ($low <= $high) {
+                my $mid = int(($low + $high) / 2);
+                if ($arr->[$mid]{timestamp} <= $ts) {
+                    $idx = $mid;
+                    $low = $mid + 1;
+                } else {
+                    $high = $mid - 1;
+                }
+            }
+        }
+        $self->{_effective_last_index}{$tf} = $idx;
+    }
 }
 
 1;

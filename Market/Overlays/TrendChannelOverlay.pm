@@ -62,12 +62,11 @@ sub draw {
         my $res_p1 = $channel->{resistance}{pivot1};
         my $sup_end = $channel->{support}{end_index};
         
-        # Extender visualmente hasta ref_idx o invalidated_at
-        my $draw_end_idx = $ref_idx;
+        # Extender visualmente hasta el final de los datos o invalidated_at
+        my $draw_end_idx = $sup_end;
         if ($state eq 'invalidated' && defined $channel->{invalidated_at}) {
             $draw_end_idx = $channel->{invalidated_at};
         }
-        $draw_end_idx = $sup_end if !defined $draw_end_idx;
         
         next if defined $draw_end_idx && defined $start_idx && $draw_end_idx < $start_idx;
         next if defined $end_idx && $sup_p1->{index} > $end_idx;

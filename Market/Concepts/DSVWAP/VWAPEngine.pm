@@ -23,7 +23,7 @@ sub new {
         current_dir  => 0,
         cum_vol      => 0.0,
         cum_pvol     => 0.0,
-        sum_sq_diff  => 0.0,
+        cum_pv2      => 0.0,
         last_vwap    => 0.0,
     };
     
@@ -40,7 +40,7 @@ sub reset {
     $self->{current_dir} = 0;
     $self->{cum_vol}     = 0.0;
     $self->{cum_pvol}    = 0.0;
-    $self->{sum_sq_diff} = 0.0;
+    $self->{cum_pv2}     = 0.0;
     $self->{last_vwap}   = 0.0;
     $self->{cache}->clear_main_vwap();
 }
@@ -77,7 +77,7 @@ sub process_bar {
 
         $self->{cum_vol} = 0.0;
         $self->{cum_pvol} = 0.0;
-        $self->{sum_sq_diff} = 0.0;
+        $self->{cum_pv2} = 0.0;
         $self->{last_vwap} = 0.0;
         $self->{cache}->clear_main_vwap();
 
@@ -97,22 +97,20 @@ sub _accumulate_bar {
     my $c = $market_data->get_candle($idx);
     return unless $c;
     my $src = $self->_get_src_price($c);
-    my $vol = $c->{volume} || 0;
-    
-    return if $vol == 0;
+    my $vol = $c->{volume} // 0;
+    $vol = 1 if $vol <= 0;
 
-    # Welford para suma de varianzas ponderadas:
-    # 1. Update means
     $self->{cum_vol}  += $vol;
     $self->{cum_pvol} += $src * $vol;
+    $self->{cum_pv2}  += $vol * $src * $src;
+
     my $vwap = $self->{cum_pvol} / $self->{cum_vol};
 
-    # 2. Update sum of squared differences
-    # formula incremental: M2 = M2 + w * (x - mean_old) * (x - mean_new)
-    $self->{sum_sq_diff} += $vol * ($src - $self->{last_vwap}) * ($src - $vwap);
+    my $mean_p2 = $self->{cum_pv2} / $self->{cum_vol};
+    my $var     = $mean_p2 - ($vwap * $vwap);
+    $var = 0 if $var < 0;
+    my $std_dev = sqrt($var);
     $self->{last_vwap} = $vwap;
-
-    my $std_dev = sqrt($self->{sum_sq_diff} / $self->{cum_vol});
 
     # Guardar directo al caché para el overlay
     push @{$self->{cache}{main_vwap}},     { x => $idx, y => $vwap, dir => $self->{current_dir} };

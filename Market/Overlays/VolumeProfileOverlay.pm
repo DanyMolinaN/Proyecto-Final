@@ -38,12 +38,8 @@ sub draw {
 
     $self->clear($canvas);
 
-    my $distribution = $data->{distribution} || {};
-    my $bins_ref     = $distribution->{sorted_bins} || [];
+    my $bins_ref     = $data->{bins} || [];
     return $self unless ref($bins_ref) eq 'ARRAY' && @$bins_ref;
-
-    my $poc        = $data->{poc} || {};
-    my $value_area = $data->{value_area} || {};
 
     my $width      = $scale->{width} || 800;
     my $strip_w    = $scale->{y_axis_strip_w} || 66;
@@ -53,29 +49,26 @@ sub draw {
     $bar_region_width = 180 if $bar_region_width > 180;
     my $x_right = $chart_width;
     my $x_left  = $x_right - $bar_region_width;
-    my $max_volume = 0;
-    for my $bin (@$bins_ref) {
-        next unless $bin && ref($bin) eq 'HASH';
-        my $vol = $bin->{volume} || 0;
-        $max_volume = $vol if $vol > $max_volume;
-    }
+    
+    my $max_volume = $data->{max_total} || 0;
     return $self unless $max_volume > 0;
 
     my $max_bar_w  = $chart_width * 0.22;
     return $self if $max_bar_w <= 1;
 
-    my $poc_bin = undef;
-    my $poc_price = $poc->{price};
+    my $poc_bin_coords = undef;
+    my $poc_price_y = undef;
 
     for my $bin (@$bins_ref) {
         next unless $bin && ref($bin) eq 'HASH';
-        my $price = $bin->{price};
-        my $vol   = $bin->{volume} || 0;
-        next unless defined $price;
+        my $price_lo = $bin->{price_lo};
+        my $price_hi = $bin->{price_hi};
+        my $vol      = $bin->{total} || 0;
+        next unless defined $price_lo && defined $price_hi;
         next if $vol <= 0;
 
-        my $y1 = $scale->value_to_y($price + ($bin->{size} || 0)/2) || $scale->value_to_y($price);
-        my $y2 = $scale->value_to_y($price - ($bin->{size} || 0)/2) || $scale->value_to_y($price) + 2;
+        my $y1 = $scale->value_to_y($price_hi);
+        my $y2 = $scale->value_to_y($price_lo);
         next unless defined $y1 && defined $y2;
         ($y1, $y2) = ($y2, $y1) if $y1 > $y2;
         next unless _y_in_clip($y1, $clip_y_top, $clip_y_bottom) || _y_in_clip($y2, $clip_y_top, $clip_y_bottom);
@@ -90,8 +83,9 @@ sub draw {
         my $x2 = $x3 - $sell_len;
         my $x1 = $x2 - $buy_len;
 
-        if (defined $poc_price && abs($price - $poc_price) < 1e-9) {
-            $poc_bin = { x1 => $x1, x2 => $x3, y1 => $y1, y2 => $y2 };
+        if ($bin->{is_poc}) {
+            $poc_bin_coords = { x1 => $x1, x2 => $x3, y1 => $y1, y2 => $y2 };
+            $poc_price_y = ($y1 + $y2) / 2;
         }
 
         $canvas->createRectangle($x1, $y1, $x2, $y2,
@@ -102,39 +96,37 @@ sub draw {
             if $sell_len > 0;
     }
 
-    if ($poc_bin) {
-        $canvas->createRectangle($poc_bin->{x1}, $poc_bin->{y1}, $poc_bin->{x2}, $poc_bin->{y2},
+    if ($poc_bin_coords) {
+        $canvas->createRectangle($poc_bin_coords->{x1}, $poc_bin_coords->{y1}, $poc_bin_coords->{x2}, $poc_bin_coords->{y2},
             -fill => '', -outline => '#ffeb3b', -width => 2, -tags => ['overlay_volume_profile']);
     }
 
-    if (defined $poc->{price}) {
-        my $y = $scale->value_to_y($poc->{price});
-        if (defined $y && _y_in_clip($y, $clip_y_top, $clip_y_bottom)) {
-            $canvas->createLine($x_left, $y, $width, $y,
-                -fill   => '#ffeb3b',
-                -width  => 2,
-                -dash   => [4, 4],
-                -tags   => ['overlay_volume_profile'],
-            );
-            $canvas->createText($width - 4, $y - 6,
-                -text   => 'POC',
-                -anchor => 'e',
-                -fill   => '#ffeb3b',
-                -font   => 'Helvetica 8 bold',
-                -tags   => ['overlay_volume_profile'],
-            );
-        }
+    if (defined $poc_price_y && _y_in_clip($poc_price_y, $clip_y_top, $clip_y_bottom)) {
+        $canvas->createLine($x_left, $poc_price_y, $width, $poc_price_y,
+            -fill   => '#ffeb3b',
+            -width  => 2,
+            -dash   => [4, 4],
+            -tags   => ['overlay_volume_profile'],
+        );
+        $canvas->createText($width - 4, $poc_price_y - 6,
+            -text   => 'POC',
+            -anchor => 'e',
+            -fill   => '#ffeb3b',
+            -font   => 'Helvetica 8 bold',
+            -tags   => ['overlay_volume_profile'],
+        );
     }
 
-    if (defined $value_area->{value_area_low} && defined $value_area->{value_area_high}) {
-        for my $label (qw(value_area_low value_area_high)) {
-            my $price = $value_area->{$label};
-            next unless defined $price;
+    if (defined $data->{val_price} && defined $data->{vah_price}) {
+        for my $entry (
+            ['VAL', $data->{val_price}],
+            ['VAH', $data->{vah_price}]
+        ) {
+            my ($text, $price) = @$entry;
             my $y = $scale->value_to_y($price);
             next unless defined $y;
             next unless _y_in_clip($y, $clip_y_top, $clip_y_bottom);
             my $line_color = '#81d4fa';
-            my $text      = $label eq 'value_area_low' ? 'VAL' : 'VAH';
             $canvas->createLine($x_left, $y, $x_right, $y,
                 -fill   => $line_color,
                 -width  => 1,

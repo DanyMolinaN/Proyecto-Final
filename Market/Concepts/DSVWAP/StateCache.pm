@@ -24,6 +24,7 @@ sub new {
         # Línea de la trayectoria (zigzag y rastro ghost)
         zigzag_lines   => [], # [ { x1, y1, x2, y2, color, style } ]
         ghost_levels   => [], # [ { x, y } ]
+        ghost_path     => [], # [ { x, y, dir, seq } ]
 
         # Live Preview (se actualiza solo en el tick actual, nunca se guarda al historial)
         ghost_vwap     => [],
@@ -33,6 +34,8 @@ sub new {
         ghost_bands_l2 => [],
         ghost_bands_u3 => [],
         ghost_bands_l3 => [],
+        ghost_line     => undef, # { x1, y1, x2, y2 }
+        ghost_label    => undef, # { x, y, dir }
     };
     bless $self, $class;
     return $self;
@@ -49,6 +52,7 @@ sub clear_all {
     $self->{main_bands_l3} = [];
     $self->{zigzag_lines} = [];
     $self->{ghost_levels} = [];
+    $self->{ghost_path} = [];
     $self->clear_ghost();
 }
 
@@ -65,13 +69,16 @@ sub clear_main_vwap {
 
 sub clear_ghost {
     my ($self) = @_;
-    $self->{ghost_vwap} = [];
+    $self->{ghost_vwap}     = [];
     $self->{ghost_bands_u1} = [];
     $self->{ghost_bands_l1} = [];
     $self->{ghost_bands_u2} = [];
     $self->{ghost_bands_l2} = [];
     $self->{ghost_bands_u3} = [];
     $self->{ghost_bands_l3} = [];
+    $self->{ghost_line}     = undef;
+    $self->{ghost_label}    = undef;
+    $self->{ghost_path}     = [];
 }
 
 1;

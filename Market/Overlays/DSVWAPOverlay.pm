@@ -20,6 +20,12 @@ sub new {
     return $self;
 }
 
+sub set_data {
+    my ($self, $data) = @_;
+    $self->{data} = $data;
+    return $self;
+}
+
 use constant TAG => 'overlay_dsvwap';
 
 use constant {
@@ -76,6 +82,26 @@ sub draw {
         }
     }
 
+    # 1.5. Fantasmas históricos fijos
+    if (my $ghosts = $cache->{ghost_levels}) {
+        for my $pt (@$ghosts) {
+            next if $pt->{x} < $start_idx || $pt->{x} > $end_idx;
+            my $cx = $scale->index_to_center_x($pt->{x});
+            my $cy = $scale->value_to_y($pt->{y});
+            my $tag_id = "ghost_marker_$pt->{x}_$pt->{y}";
+            my $lbl = sprintf("👻 %.4f", $pt->{y});
+            
+            $canvas->createText(
+                $cx, $cy - 10,
+                -text => $lbl,
+                -anchor => 's',
+                -fill => '#78909c',
+                -font => 'TkDefaultFont 7',
+                -tags => [TAG, $tag_id]
+            );
+        }
+    }
+
     # Ghost Line del Tick (Preview flotante)
     if (my $g_line = $cache->{ghost_line}) {
         my $cx1 = $scale->index_to_center_x($g_line->{x1});
@@ -88,6 +114,43 @@ sub draw {
             $cx1, $cy1, $cx2, $cy2,
             -fill => $color, -dash => [2, 2], -width => 1, -tags => [TAG]
         );
+    }
+
+    # Marcador vivo (Ghost Label)
+    if (my $g_lbl = $cache->{ghost_label}) {
+        my $cx = $scale->index_to_center_x($g_lbl->{x});
+        my $cy = $scale->value_to_y($g_lbl->{y});
+        my $color = $g_lbl->{dir} == -1 ? C_ZIGZAG_PL : C_ZIGZAG_PH;
+        my $tag_id = "live_ghost_marker";
+        
+        $canvas->createText(
+            $cx, $cy - 10,
+            -text => "👻",
+            -anchor => 's',
+            -fill => $color,
+            -font => 'TkDefaultFont 8',
+            -tags => [TAG, $tag_id]
+        );
+    }
+
+    # Rastro acumulado (Ghost Path 1, 2, 3...)
+    if (my $path = $cache->{ghost_path}) {
+        for my $pt (@$path) {
+            next if $pt->{x} < $start_idx || $pt->{x} > $end_idx;
+            my $cx = $scale->index_to_center_x($pt->{x});
+            my $cy = $scale->value_to_y($pt->{y});
+            my $color = $pt->{dir} == -1 ? C_ZIGZAG_PL : C_ZIGZAG_PH;
+            my $tag_id = "ghost_path_$pt->{seq}_$pt->{x}";
+            
+            $canvas->createText(
+                $cx, $pt->{dir} == 1 ? $cy + 10 : $cy - 10,
+                -text => $pt->{seq},
+                -anchor => $pt->{dir} == 1 ? 'n' : 's',
+                -fill => $color,
+                -font => 'TkDefaultFont 7 bold',
+                -tags => [TAG, $tag_id]
+            );
+        }
     }
 
     # 2. Dibujar VWAP Principal

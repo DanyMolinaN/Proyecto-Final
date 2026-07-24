@@ -8,7 +8,7 @@ use Market::Indicators::ZigZagMTF;
 # Tolerancia de pendiente para considerar lineas como paralelas (15% diff relativa maxima)
 use constant CHANNEL_SLOPE_TOLERANCE => 0.15;
 # Tolerancia de barras consecutivas cerrando fuera del canal para invalidarlo
-use constant CHANNEL_BREAK_CONFIRMATION_BARS => 3;
+use constant CHANNEL_BREAK_CONFIRMATION_BARS => 1;
 # Diferencia maxima absoluta en pendiente para canales casi horizontales
 use constant HORIZONTAL_SLOPE_THRESHOLD => 0.0005;
 use constant MAX_ACTIVE_CHANNELS => 3;
@@ -24,6 +24,7 @@ sub new {
         # Estado de barras fuera del canal para la deteccion de ruptura
         break_counters    => {}, # channel_id -> { side => 'support'|'resistance', count => N }
         channel_seq       => 0,
+        known_channels    => {},
     };
     bless $self, $class;
     return $self;
@@ -35,6 +36,7 @@ sub reset {
     $self->{channels} = [];
     $self->{break_counters} = {};
     $self->{channel_seq} = 0;
+    $self->{known_channels} = {};
     $self->{zigzag}->reset();
 }
 
@@ -101,13 +103,14 @@ sub _check_channel_break {
         if (!defined $self->{break_counters}{$id}{side} || $self->{break_counters}{$id}{side} ne $current_side) {
             $self->{break_counters}{$id}{side} = $current_side;
             $self->{break_counters}{$id}{count} = 1;
+            $self->{break_counters}{$id}{first_idx} = $index;
         } else {
             $self->{break_counters}{$id}{count}++;
         }
         
         if ($self->{break_counters}{$id}{count} >= CHANNEL_BREAK_CONFIRMATION_BARS) {
             $channel->{state} = 'invalidated';
-            $channel->{invalidated_at} = $index;
+            $channel->{invalidated_at} = $self->{break_counters}{$id}{first_idx};
             $channel->{break_side} = $self->{break_counters}{$id}{side};
             $channel->{support}{state} = 'invalidated';
             $channel->{resistance}{state} = 'invalidated';
@@ -256,15 +259,22 @@ sub calculate {
 
     my @best_candidates = _best_channel_candidates(@candidates);
     my %seen = map { (_channel_key($_) => 1) } @{ $self->{channels} || [] };
+    
+    # Tambien marcamos como vistos los que ya conocemos globalmente
+    for my $k (keys %{$self->{known_channels} || {}}) {
+        $seen{$k} = 1;
+    }
+
     for my $cand (@best_candidates) {
         last if scalar(@{ $self->{channels} || [] }) >= MAX_ACTIVE_CHANNELS;
         my $key = join ':',
             $cand->{support}{p1}{index}, $cand->{support}{p2}{index},
             $cand->{resistance}{p1}{index}, $cand->{resistance}{p2}{index};
         next if $seen{$key};
-        my $new_ch = $self->_new_channel_from_candidate($cand, $end_index);
+        my $new_ch = $self->_new_channel_from_candidate($cand, $end_index, $market_data);
         push @{ $self->{channels} }, $new_ch;
         $seen{$key} = 1;
+        $self->{known_channels}{$key} = 1;
     }
 
     my @ranked = sort {
@@ -280,23 +290,27 @@ sub calculate {
 }
 
 sub _new_channel_from_candidate {
-    my ($self, $cand, $end_index) = @_;
+    my ($self, $cand, $end_index, $market_data) = @_;
     my $sup = $cand->{support};
     my $res = $cand->{resistance};
     $self->{channel_seq}++;
+    
+    my $start_idx = _max($sup->{p2}{index}, $res->{p2}{index});
+    my $init_end_idx = $start_idx;
+    
     my $new_ch = {
         id => $self->{channel_seq},
         type => $cand->{type},
         support => {
             pivot1 => { index => $sup->{p1}{index}, price => $sup->{p1}{price} },
             pivot2 => { index => $sup->{p2}{index}, price => $sup->{p2}{price} },
-            end_index => $end_index,
+            end_index => $init_end_idx,
             state => 'active'
         },
         resistance => {
             pivot1 => { index => $res->{p1}{index}, price => $res->{p1}{price} },
             pivot2 => { index => $res->{p2}{index}, price => $res->{p2}{price} },
-            end_index => $end_index,
+            end_index => $init_end_idx,
             state => 'active'
         },
         slope_support => $sup->{m},
@@ -313,6 +327,23 @@ sub _new_channel_from_candidate {
         my $r = $new_ch->{resistance}{pivot1}{price} + $new_ch->{slope_resistance} * ($idx - $new_ch->{resistance}{pivot1}{index});
         return ($s + $r) / 2;
     };
+    
+    # Retroactively evaluate the channel from its formation to current end_index
+    if ($market_data) {
+        for my $i ($start_idx + 1 .. $end_index) {
+            my $candle = $market_data->get_candle($i);
+            next unless $candle;
+            
+            if ($new_ch->{state} eq 'active') {
+                $new_ch->{support}{end_index} = $i;
+                $new_ch->{resistance}{end_index} = $i;
+                $self->_check_channel_break($new_ch, $i, $candle);
+            } else {
+                last; # Already invalidated
+            }
+        }
+    }
+    
     return $new_ch;
 }
 
