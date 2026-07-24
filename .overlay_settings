@@ -1,6 +1,6 @@
 # Chart overlay visibility settings
-ob_external_count=5
-ob_internal_count=5
+ob_external_count=10
+ob_internal_count=10
 show_anchored_vwap=0
 show_bos=1
 show_bos_external=1
@@ -9,6 +9,7 @@ show_choch=1
 show_choch_external=1
 show_choch_internal=1
 show_daily_levels=0
+show_dynamic_vwap=0
 show_entries=0
 show_eqh=0
 show_eql=0
@@ -28,7 +29,7 @@ show_liquidity_levels=0
 show_ll=0
 show_monthly_levels=0
 show_ob_external=1
-show_ob_internal=1
+show_ob_internal=0
 show_orderblocks=0
 show_premium_discount=0
 show_runs=0

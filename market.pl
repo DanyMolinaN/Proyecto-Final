@@ -41,7 +41,7 @@ use Market::Concepts::SMCStructureEngine;
 use Market::Concepts::FVGEngine;
 use Market::Concepts::OrderBlockEngine;
 use Market::Volume::VolumeProfileEngine;
-use Market::Volume::AnchoredVWAP;
+
 use Market::Concepts::FibonacciEngine;
 use Market::Strategies::Indicators::SupplyDemand;
 use Market::Concepts::PremiumDiscountZones;
@@ -279,8 +279,14 @@ my $volume_profile_engine = Market::Volume::VolumeProfileEngine->new(
 );
 $engine_registry->register('volume_profile', $volume_profile_engine);
 
+use Market::Volume::AnchoredVWAP;
 my $anchored_vwap_engine = Market::Volume::AnchoredVWAP->new();
 $engine_registry->register('anchored_vwap', $anchored_vwap_engine);
+
+use Market::Concepts::DSVWAP::Engine;
+
+my $dsvwap_engine = Market::Concepts::DSVWAP::Engine->new();
+$engine_registry->register('dynamic_vwap', $dsvwap_engine);
 
 my $supply_demand_engine = Market::Strategies::Indicators::SupplyDemand->new();
 $engine_registry->register('supply_demand', $supply_demand_engine,

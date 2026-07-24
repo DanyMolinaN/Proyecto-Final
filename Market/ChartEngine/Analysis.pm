@@ -91,6 +91,7 @@ sub rebuild_analysis_cache {
         orderblock        => $raw_cache->{orderblock},
         volume_profile    => $raw_cache->{volume_profile},
         anchored_vwap     => $raw_cache->{anchored_vwap},
+        dynamic_vwap      => $raw_cache->{dynamic_vwap},
         fibonacci         => $raw_cache->{fibonacci},
         supply_demand     => $raw_cache->{supply_demand},
         trend_channel     => $raw_cache->{trend_channel},
@@ -231,6 +232,7 @@ sub _prepare_overlay_data {
     my $orderblock_data = $cache->{orderblock};
     my $volume_profile_data = $cache->{volume_profile};
     my $anchored_vwap_data = $cache->{anchored_vwap};
+    my $dynamic_vwap_data = $cache->{dynamic_vwap};
     my $fibonacci_data = $cache->{fibonacci};
     my $supply_demand_data = $cache->{supply_demand};
     my $trend_channel_data = $cache->{trend_channel};
@@ -248,6 +250,7 @@ sub _prepare_overlay_data {
         orderblock     => $orderblock_data,
         volume_profile => $volume_profile_data,
         anchored_vwap  => $anchored_vwap_data,
+        dynamic_vwap   => $dynamic_vwap_data,
         fibonacci      => $fibonacci_data,
         supply_demand  => $supply_demand_data,
         trend_channel  => $trend_channel_data,

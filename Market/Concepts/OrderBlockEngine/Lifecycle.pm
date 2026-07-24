@@ -28,44 +28,70 @@ sub _apply_lifecycle {
         my $mit_idx   = undef;
         my $inv_idx   = undef;
 
+        my $swing_idx = $ob->{swing_index};
+        my $inv_level;
+        if (defined $swing_idx && $candles->[$swing_idx]) {
+            $inv_level = $type eq 'bullish' ? $candles->[$swing_idx]->{low} : $candles->[$swing_idx]->{high};
+        } else {
+            $inv_level = $type eq 'bullish' ? $ob_low : $ob_high;
+        }
+
         for (my $i = $start; $i <= $last_index; $i++) {
             my $c = $candles->[$i];
             next unless $c;
 
             if ($type eq 'bullish') {
-                # ── Invalidación: cierre bajo el OB ──────────────────────
-                if ($c->{close} < $ob_low) {
-                    $state   = 'Invalidated';
-                    $inv_idx = $i;
-                    last;
-                }
                 # ── Penetración de la zona ────────────────────────────────
                 if ($c->{low} < $ob_high) {
                     my $pct = ($ob_high - $c->{low}) / $height * 100;
                     $pct = 100 if $pct > 100;
                     if ($pct > $max_pct) { $max_pct = $pct; }
-                    if ($max_pct >= 50 && $state eq 'Detected') {
-                        $state   = 'Mitigated';
-                        $mit_idx = $i;
-                    }
                 }
-            }
-            else { # bearish
-                # ── Invalidación: cierre sobre el OB ─────────────────────
-                if ($c->{close} > $ob_high) {
+
+                # ── Invalidación: cierre bajo el swing original ──────────
+                if ($c->{close} < $inv_level) {
                     $state   = 'Invalidated';
                     $inv_idx = $i;
                     last;
                 }
+                # ── Mitigación Total: cierre bajo el OB ──────────────────
+                elsif ($c->{close} < $ob_low) {
+                    if ($state ne 'Mitigated' && $state ne 'Invalidated') {
+                        $state   = 'Mitigated';
+                        $mit_idx = $i unless defined $mit_idx;
+                    }
+                }
+                # ── Penetración Parcial ──────────────────────────────────
+                elsif ($max_pct >= 50 && $state eq 'Detected') {
+                    $state   = 'PartiallyMitigated';
+                    $mit_idx = $i;
+                }
+            }
+            else { # bearish
                 # ── Penetración de la zona ────────────────────────────────
                 if ($c->{high} > $ob_low) {
                     my $pct = ($c->{high} - $ob_low) / $height * 100;
                     $pct = 100 if $pct > 100;
                     if ($pct > $max_pct) { $max_pct = $pct; }
-                    if ($max_pct >= 50 && $state eq 'Detected') {
+                }
+
+                # ── Invalidación: cierre sobre el swing original ─────────
+                if ($c->{close} > $inv_level) {
+                    $state   = 'Invalidated';
+                    $inv_idx = $i;
+                    last;
+                }
+                # ── Mitigación Total: cierre sobre el OB ─────────────────
+                elsif ($c->{close} > $ob_high) {
+                    if ($state ne 'Mitigated' && $state ne 'Invalidated') {
                         $state   = 'Mitigated';
-                        $mit_idx = $i;
+                        $mit_idx = $i unless defined $mit_idx;
                     }
+                }
+                # ── Penetración Parcial ──────────────────────────────────
+                elsif ($max_pct >= 50 && $state eq 'Detected') {
+                    $state   = 'PartiallyMitigated';
+                    $mit_idx = $i;
                 }
             }
         }
@@ -97,25 +123,107 @@ sub _deduplicate {
 }
 
 # =============================================================================
+# PRIVATE — _filter_overlaps(\@blocks)  →  @filtered
+#
+# Elimina solapamientos > 50% entre bloques del mismo tipo. Se conserva el
+# de break_index más reciente.
+# =============================================================================
+sub _filter_overlaps {
+    my ($self, $blocks) = @_;
+    my @sorted = sort { $b->{break_index} <=> $a->{break_index} } @$blocks;
+    my @kept;
+    for my $b (@sorted) {
+        my $overlap = 0;
+        for my $k (@kept) {
+            next if $b->{type} ne $k->{type};
+            my $max_low = $b->{low} > $k->{low} ? $b->{low} : $k->{low};
+            my $min_high = $b->{high} < $k->{high} ? $b->{high} : $k->{high};
+            if ($min_high > $max_low) {
+                my $intersection = $min_high - $max_low;
+                my $h1 = $b->{high} - $b->{low};
+                my $h2 = $k->{high} - $k->{low};
+                my $min_h = $h1 < $h2 ? $h1 : $h2;
+                if ($min_h > 0 && ($intersection / $min_h) > 0.5) {
+                    $overlap = 1;
+                    last;
+                }
+            }
+        }
+        push @kept, $b unless $overlap;
+    }
+    # Restore original order (by break_index ascending)
+    return reverse @kept;
+}
+
+# =============================================================================
 # PRIVATE — _compute_atr(\@candles, $last_idx, $period)
 # =============================================================================
-sub _compute_atr {
+sub _compute_atr_series {
     my ($candles, $last_idx, $period) = @_;
-    return 1.0 if $last_idx < 1;
-    my $start = $last_idx - $period + 1;
-    $start = 1 if $start < 1;
-    my ($sum, $count) = (0, 0);
-    for my $i ($start .. $last_idx) {
-        my $c  = $candles->[$i]     or next;
-        my $cp = $candles->[$i - 1] or next;
+    my @atr;
+    $#atr = $last_idx;
+    return \@atr if $last_idx < 1;
+    
+    my $sum_tr = 0;
+    my $count  = 0;
+    my $alpha  = 1.0 / $period;
+    
+    for my $i (1 .. $last_idx) {
+        my $c  = $candles->[$i];
+        my $cp = $candles->[$i - 1];
+        next unless $c && $cp;
+        
         my $hl = $c->{high} - $c->{low};
         my $hc = abs($c->{high} - $cp->{close});
         my $lc = abs($c->{low}  - $cp->{close});
         my $tr = $hl > $hc ? $hl : $hc;
         $tr = $lc if $lc > $tr;
-        $sum += $tr; $count++;
+        
+        if (!defined $atr[$i - 1]) {
+            $sum_tr += $tr;
+            $count++;
+            if ($count == $period) {
+                $atr[$i] = $sum_tr / $period;
+            }
+        } else {
+            $atr[$i] = $alpha * $tr + (1 - $alpha) * $atr[$i - 1];
+        }
     }
-    return $count > 0 ? $sum / $count : 1.0;
+    
+    # Fill leading missing values with the first valid ATR or 1.0
+    my $first_valid = 1.0;
+    for my $i (0 .. $last_idx) {
+        if (defined $atr[$i]) {
+            $first_valid = $atr[$i];
+            last;
+        }
+    }
+    for my $i (0 .. $last_idx) {
+        $atr[$i] //= $first_valid;
+    }
+    
+    return \@atr;
+}
+
+# =============================================================================
+# PRIVATE — _compute_volume_percentile(\@candles, $idx, $period)
+# =============================================================================
+sub _compute_volume_percentile {
+    my ($candles, $idx, $period) = @_;
+    my $start = $idx - $period + 1;
+    $start = 0 if $start < 0;
+    my @vols;
+    for my $i ($start .. $idx) {
+        my $c = $candles->[$i];
+        push @vols, $c->{volume} // 0 if $c;
+    }
+    return 100 unless @vols > 0;
+    my $target_vol = $candles->[$idx]->{volume} // 0;
+    my $less_count = 0;
+    for my $v (@vols) {
+        $less_count++ if $v < $target_vol;
+    }
+    return ($less_count / scalar(@vols)) * 100;
 }
 
 1;

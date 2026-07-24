@@ -45,6 +45,7 @@ use Market::Overlays::StructureOverlay;
 use Market::Overlays::FVGOverlay;
 use Market::Overlays::OrderBlockOverlay;
 use Market::Overlays::VolumeProfileOverlay;
+use Market::Overlays::DSVWAPOverlay;
 use Market::Overlays::AnchoredVWAPOverlay;
 use Market::Overlays::FibonacciOverlay;
 use Market::Overlays::SupplyDemandOverlay;
@@ -136,6 +137,9 @@ sub new {
     my $anchored_vwap_overlay = Market::Overlays::AnchoredVWAPOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
+    my $dsvwap_overlay = Market::Overlays::DSVWAPOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
     my $fibonacci_overlay = Market::Overlays::FibonacciOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
@@ -187,6 +191,7 @@ sub new {
         orderblock_overlay   => $orderblock_overlay,
         volume_profile_overlay => $volume_profile_overlay,
         anchored_vwap_overlay => $anchored_vwap_overlay,
+        dsvwap_overlay       => $dsvwap_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
         supply_demand_overlay => $supply_demand_overlay,
         trend_channel_overlay    => $trend_channel_overlay,

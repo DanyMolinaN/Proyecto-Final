@@ -28,9 +28,9 @@ package Market::Concepts::OrderBlockEngine;
 #      • OB BEARISH: price.high >=  ob.high  → ídem en dirección contraria
 #      El OB permanece dibujable hasta que el CLOSE lo invalide (cruza fuera).
 #
-#   5. Invalidación (el OB es eliminado del caché):
-#      • OB BULLISH: close < ob.low
-#      • OB BEARISH: close > ob.high
+#   5. Invalidación (el OB es excluido de active[] y del render, pero conservado en blocks[] hasta la poda por MAX_BLOCKS):
+#      • OB BULLISH: close < ob.low (o swing origin)
+#      • OB BEARISH: close > ob.high (o swing origin)
 #
 # ── Fuente de eventos BOS/CHoCH ──────────────────────────────────────────────
 # Este engine consume la salida de Market::Concepts::SMCStructureEngine
@@ -92,6 +92,12 @@ sub new {
         # LuxAlgo usa 2 × ATR como frontera de "barra de alta volatilidad".
         vol_atr_mult => $args{vol_atr_mult} // 2.0,
 
+        # Umbral de desplazamiento en múltiplos de ATR (0.5 a 1.0 recomendado).
+        displacement_atr_mult => $args{displacement_atr_mult} // 1.0,
+        
+        # Filtro opcional de volumen relativo (percentil 0..100). undef = desactivado.
+        min_rel_volume_pctl   => $args{min_rel_volume_pctl},
+
         %args,
     };
     bless $self, $class;
@@ -121,6 +127,8 @@ sub calculate {
     return {} unless $market_data;
 
     $self->reset();
+    $self->{metadata}{displacement_filtered} = 0;
+    $self->{metadata}{volume_filtered} = 0;
 
     my $total = $market_data->size();
     return {} unless $total > 0;
@@ -141,7 +149,7 @@ sub calculate {
     }
 
     # ── ATR global (para detección de velas de alta volatilidad) ─────────
-    my $atr = _compute_atr(\@candles, $last_index, 200);
+    my $atr_series = _compute_atr_series(\@candles, $last_index, 200);
 
     # ── Construye parsed_highs / parsed_lows ──────────────────────────────
     # En LuxAlgo: si (high - low) >= 2 × ATR  →  barra de alta volatilidad
@@ -157,6 +165,7 @@ sub calculate {
     for my $i (0 .. $last_index) {
         my $c = $candles[$i];
         unless ($c) { $ph[$i] = undef; $pl[$i] = undef; next; }
+        my $atr = $atr_series->[$i] // 1;
         my $high_vol = ($c->{high} - $c->{low}) >= ($mult * $atr);
         $ph[$i] = $high_vol ? $c->{low}  : $c->{high};
         $pl[$i] = $high_vol ? $c->{high} : $c->{low};
@@ -193,6 +202,25 @@ sub calculate {
         next unless defined $ob_high && defined $ob_low;
         next if $ob_high <= $ob_low;
 
+        # ── Gate 1: Filtro de Displacement ───────────────────────────────────
+        my $break_price = $candles[$break_idx]->{close};
+        my $displacement = $dir eq 'bullish' ? ($break_price - $ob_low) : ($ob_high - $break_price);
+        my $atr_break = $atr_series->[$break_idx] // $atr_series->[$last_index] // 1;
+        
+        if ($displacement < $self->{displacement_atr_mult} * $atr_break) {
+            $self->{metadata}{displacement_filtered}++;
+            next;
+        }
+
+        # ── Gate 2: Filtro de Volumen Relativo ───────────────────────────────
+        if (defined $self->{min_rel_volume_pctl}) {
+            my $vol_pctl = _compute_volume_percentile(\@candles, $ob_idx, 200);
+            if ($vol_pctl < $self->{min_rel_volume_pctl}) {
+                $self->{metadata}{volume_filtered}++;
+                next;
+            }
+        }
+
         my $mid = ($ob_high + $ob_low) / 2;
 
         push @blocks, {
@@ -219,6 +247,9 @@ sub calculate {
     # ── Elimina duplicados: si dos eventos apuntan a la misma vela OB ─────
     @blocks = _deduplicate(\@blocks);
 
+    # ── Filtro anti-solapamiento ──────────────────────────────────────────
+    @blocks = $self->_filter_overlaps(\@blocks);
+
     # ── Aplica mitigación e invalidación ──────────────────────────────────
     $self->_apply_lifecycle(\@blocks, \@candles, $last_index);
 
@@ -231,21 +262,26 @@ sub calculate {
     }
 
     # ── Resultado ─────────────────────────────────────────────────────────
-    my @active = grep { ($_->{state} // '') eq 'Detected' } @blocks;
+    my @active = grep { ($_->{state} // '') =~ /^(?:Detected|PartiallyMitigated)$/ } @blocks;
 
     $self->{blocks}   = \@blocks;
     $self->{active}   = \@active;
     $self->{metadata} = {
-        timeframe     => $args{timeframe}
-                      || ($market_data->can('active_tf') ? $market_data->active_tf() : 'unknown'),
-        block_count   => scalar(@blocks),
-        active_count  => scalar(@active),
-        visible_limit => $visible_limit,
-        atr           => $atr,
-        swing_count   => scalar(grep { ($_->{scope}//'') eq 'swing'    } @blocks),
-        internal_count=> scalar(grep { ($_->{scope}//'') eq 'internal' } @blocks),
-        bos_count     => scalar(grep { ($_->{kind}  //'') eq 'BOS'     } @blocks),
-        choch_count   => scalar(grep { ($_->{kind}  //'') eq 'CHoCH'   } @blocks),
+        timeframe             => $args{timeframe}
+                              || ($market_data->can('active_tf') ? $market_data->active_tf() : 'unknown'),
+        block_count           => scalar(@blocks),
+        active_count          => scalar(@active),
+        visible_limit         => $visible_limit,
+        atr                   => $atr_series->[$last_index] // 1,
+        swing_count           => scalar(grep { ($_->{scope}//'') eq 'swing'    } @blocks),
+        internal_count        => scalar(grep { ($_->{scope}//'') eq 'internal' } @blocks),
+        bos_count             => scalar(grep { ($_->{kind}  //'') eq 'BOS'     } @blocks),
+        choch_count           => scalar(grep { ($_->{kind}  //'') eq 'CHoCH'   } @blocks),
+        displacement_filtered => $self->{metadata}{displacement_filtered} // 0,
+        volume_filtered       => $self->{metadata}{volume_filtered} // 0,
+        partially_mitigated_count => scalar(grep { ($_->{state}//'') eq 'PartiallyMitigated' } @blocks),
+        mitigated_count       => scalar(grep { ($_->{state}//'') eq 'Mitigated' } @blocks),
+        invalidated_count     => scalar(grep { ($_->{state}//'') eq 'Invalidated' } @blocks),
     };
 
     return {

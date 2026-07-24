@@ -475,6 +475,7 @@ sub _sync_overlay_layer_state {
     my $orderblock_on     = $s->enabled('show_ob_external') || $s->enabled('show_ob_internal');
     my $volume_profile_on = $s->enabled('show_volume_profile');
     my $anchored_vwap_on  = $s->enabled('show_anchored_vwap');
+    my $dynamic_vwap_on   = $s->enabled('show_dynamic_vwap');
     my $fibonacci_on      = $s->enabled('show_fibonacci');
     my $supply_demand_on  = $s->enabled('show_supply_demand');
     my $trend_channel_on      = $s->enabled('show_trend_channel');
@@ -490,6 +491,7 @@ sub _sync_overlay_layer_state {
         [orderblock    => $orderblock_on],
         [volume_profile => $volume_profile_on],
         [anchored_vwap => $anchored_vwap_on],
+        [dynamic_vwap  => $dynamic_vwap_on],
         [fibonacci     => $fibonacci_on],
         [supply_demand => $supply_demand_on],
         [trend_channel     => $trend_channel_on],
@@ -550,6 +552,7 @@ sub _key_to_overlay_map {
         show_zzmtf_internal     => 'zzmtf_overlay',
         show_zzmtf_external     => 'zzmtf_overlay',
         show_anchored_vwap      => 'anchored_vwap',
+        show_dynamic_vwap       => 'dynamic_vwap',
         show_volume_profile     => 'volume_profile',
         show_signals            => undef,
         show_entries            => undef,

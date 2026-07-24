@@ -1,6 +1,7 @@
 package Market::Volume::AnchoredVWAP;
 use strict;
 use warnings;
+use List::Util qw(max min);
 
 sub new {
     my ( $class, %args ) = @_;
@@ -14,6 +15,13 @@ sub new {
 
         _anchor_index => undef,
         _anchor_price => undef,   # close de la vela ancla (referencia visual)
+        _anchor_kind  => 'regular',
+
+        # Estado para seguimiento de alternancia / ghost
+        _max => undef, _min => undef, _max_x1 => 0, _min_x1 => 0,
+        _follow_max => undef, _follow_min => undef, _follow_max_x1 => 0, _follow_min_x1 => 0,
+        _prev_follow_max => undef, _prev_follow_min => undef,
+        _os => 0, _px1 => 0, _py1 => undef,
 
         # Sumas incrementales desde el ancla
         _sum_v    => 0,
@@ -35,6 +43,14 @@ sub reset {
 
     $self->{_anchor_index} = undef;
     $self->{_anchor_price} = undef;
+    $self->{_anchor_kind}  = 'regular';
+
+    $self->{_max} = undef; $self->{_min} = undef; 
+    $self->{_max_x1} = 0; $self->{_min_x1} = 0;
+    $self->{_follow_max} = undef; $self->{_follow_min} = undef; 
+    $self->{_follow_max_x1} = 0; $self->{_follow_min_x1} = 0;
+    $self->{_prev_follow_max} = undef; $self->{_prev_follow_min} = undef;
+    $self->{_os} = 0; $self->{_px1} = 0; $self->{_py1} = undef;
 
     $self->{_sum_v}   = 0;
     $self->{_sum_pv}  = 0;
@@ -126,11 +142,94 @@ sub get_series {
     }
     return undef unless @points;
 
-    return {
+    my $res = {
         anchor_index => $self->{_anchor_index},
         anchor_price => $self->{_anchor_price},
+        anchor_kind  => $self->{_anchor_kind} // 'regular',
         from_index   => $from,
         to_index     => $to,
+        points       => \@points,
+    };
+
+    my $preview = $self->get_live_ghost_preview();
+    $res->{live_preview} = $preview if $preview;
+
+    return $res;
+}
+
+sub get_live_ghost_preview {
+    my ($self) = @_;
+    return undef unless @{ $self->{_pivots} };
+    
+    my $last_visible_index = $#{ $self->{_c} };
+    my $last_pivot = $self->{_pivots}[-1];
+    my $px1 = $last_pivot->{index};
+    
+    return undef if $last_visible_index <= $px1;
+
+    my $os = $last_pivot->{type} eq 'high' ? 1 : 0;
+    
+    my $x_last = undef;
+    my $y_last = undef;
+
+    for my $i ($px1 + 1 .. $last_visible_index) {
+        my $c = $self->{_c}[$i];
+        next unless defined $c;
+        if ($os == 1) {
+            if (!defined($y_last) || $c->{low} <= $y_last) {
+                $y_last = $c->{low};
+                $x_last = $i;
+            }
+        } else {
+            if (!defined($y_last) || $c->{high} >= $y_last) {
+                $y_last = $c->{high};
+                $x_last = $i;
+            }
+        }
+    }
+
+    return undef unless defined $x_last;
+
+    my $ghost_cumVol = 0;
+    my $ghost_cumPriceVol = 0;
+    my $ghost_sumSqDiff = 0;
+    my @points;
+
+    for my $i ($x_last .. $last_visible_index) {
+        my $c = $self->{_c}[$i];
+        next unless defined $c;
+        
+        my $vol = $c->{volume} // 0;
+        $vol = 1 if $vol <= 0;
+        my $tp = ($c->{high} + $c->{low} + $c->{close}) / 3;
+
+        $ghost_cumVol += $vol;
+        $ghost_cumPriceVol += $tp * $vol;
+        my $vwap = $ghost_cumVol > 0 ? $ghost_cumPriceVol / $ghost_cumVol : 0;
+
+        $ghost_sumSqDiff += $vol * (($tp - $vwap) ** 2);
+        my $var = $ghost_cumVol > 0 ? $ghost_sumSqDiff / $ghost_cumVol : 0;
+        $var = 0 if $var < 0;
+        my $stdev = sqrt($var);
+
+        my $mults = $self->{band_mult};
+        my $point = { index => $i, vwap => $vwap };
+        my @keys  = ( 'upper1', 'upper2', 'upper3' );
+        my @lkeys = ( 'lower1', 'lower2', 'lower3' );
+        for my $m_idx (0 .. $#$mults) {
+            last if $m_idx > 2;
+            my $m = $mults->[$m_idx];
+            $point->{ $keys[$m_idx] }  = $vwap + $stdev * $m;
+            $point->{ $lkeys[$m_idx] } = $vwap - $stdev * $m;
+        }
+        push @points, $point;
+    }
+
+    return {
+        anchor_index => $x_last,
+        anchor_price => $y_last,
+        from_index   => $x_last,
+        to_index     => $last_visible_index,
         points       => \@points,
     };
 }
@@ -159,6 +258,43 @@ sub _check_pivot {
     my $cand = $idx - $L;
     my $c    = $self->{_c};
 
+    my $cand_c = $c->[$cand];
+    return 0 unless defined $cand_c;
+
+    # Track alternancia history on evaluated cand
+    my $high_len = $cand_c->{high};
+    my $low_len  = $cand_c->{low};
+
+    my $prev_max = $self->{_max};
+    my $prev_min = $self->{_min};
+
+    $self->{_max} = defined($self->{_max}) ? max($high_len, $self->{_max}) : $high_len;
+    $self->{_min} = defined($self->{_min}) ? min($low_len, $self->{_min}) : $low_len;
+    $self->{_follow_max} = defined($self->{_follow_max}) ? max($high_len, $self->{_follow_max}) : $high_len;
+    $self->{_follow_min} = defined($self->{_follow_min}) ? min($low_len, $self->{_follow_min}) : $low_len;
+
+    if (!defined $prev_max || $self->{_max} > $prev_max) {
+        $self->{_max_x1} = $cand;
+        $self->{_follow_min} = $low_len;
+    }
+    if (!defined $prev_min || $self->{_min} < $prev_min) {
+        $self->{_min_x1} = $cand;
+        $self->{_follow_max} = $high_len;
+    }
+
+    my $prev_follow_min = $self->{_prev_follow_min};
+    my $prev_follow_max = $self->{_prev_follow_max};
+
+    if (!defined $prev_follow_min || $self->{_follow_min} < $prev_follow_min) {
+        $self->{_follow_min_x1} = $cand;
+    }
+    if (!defined $prev_follow_max || $self->{_follow_max} > $prev_follow_max) {
+        $self->{_follow_max_x1} = $cand;
+    }
+
+    $self->{_prev_follow_min} = $self->{_follow_min};
+    $self->{_prev_follow_max} = $self->{_follow_max};
+
     my ( $max_h, $min_l );
     for my $i ( ( $idx - 2 * $L ) .. $idx ) {
         my $cc = $c->[$i];
@@ -169,26 +305,76 @@ sub _check_pivot {
     return 0 unless defined $max_h && defined $min_l;
 
     my $reanchored = 0;
-    my $cand_c = $c->[$cand];
-    return 0 unless defined $cand_c;
 
     if ( $cand_c->{high} == $max_h ) {
-        push @{ $self->{_pivots} }, { index => $cand, price => $max_h, type => 'high' };
-        if ( $self->{mode} eq 'auto'
-            && ( !defined $self->{_anchor_index} || $cand > $self->{_anchor_index} ) )
-        {
-            $self->_set_anchor($cand);
+        my $ph = $cand_c->{high};
+        
+        # Ghost Pivot Alternation
+        if ($self->{_os} == 1) {
+            push @{ $self->{_pivots} }, { index => $self->{_min_x1}, price => $self->{_min}, type => 'low', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_min_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_min_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            $self->{_px1} = $self->{_min_x1}; $self->{_py1} = $self->{_min};
+        } elsif (defined $self->{_max} && $ph < $self->{_max}) {
+            push @{ $self->{_pivots} }, { index => $self->{_max_x1}, price => $self->{_max}, type => 'high', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_max_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_max_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            push @{ $self->{_pivots} }, { index => $self->{_follow_min_x1}, price => $self->{_follow_min}, type => 'low', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_follow_min_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_follow_min_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            $self->{_px1} = $self->{_follow_min_x1}; $self->{_py1} = $self->{_follow_min};
+        }
+
+        # Regular Pivot
+        push @{ $self->{_pivots} }, { index => $cand, price => $max_h, type => 'high', kind => 'regular' };
+        if ( $self->{mode} eq 'auto' && ( !defined $self->{_anchor_index} || $cand > $self->{_anchor_index} ) ) {
+            $self->_set_anchor($cand, 'regular');
             $reanchored = 1;
         }
+
+        $self->{_py1} = $max_h; $self->{_px1} = $cand; $self->{_os} = 1;
+        $self->{_max} = $max_h; $self->{_min} = $max_h;
     }
     if ( $cand_c->{low} == $min_l ) {
-        push @{ $self->{_pivots} }, { index => $cand, price => $min_l, type => 'low' };
-        if ( $self->{mode} eq 'auto'
-            && ( !defined $self->{_anchor_index} || $cand > $self->{_anchor_index} ) )
-        {
-            $self->_set_anchor($cand);
+        my $pl = $cand_c->{low};
+
+        # Ghost Pivot Alternation
+        if ($self->{_os} == 0) {
+            push @{ $self->{_pivots} }, { index => $self->{_max_x1}, price => $self->{_max}, type => 'high', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_max_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_max_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            $self->{_px1} = $self->{_max_x1}; $self->{_py1} = $self->{_max};
+        } elsif (defined $self->{_min} && $pl > $self->{_min}) {
+            push @{ $self->{_pivots} }, { index => $self->{_min_x1}, price => $self->{_min}, type => 'low', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_min_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_min_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            push @{ $self->{_pivots} }, { index => $self->{_follow_max_x1}, price => $self->{_follow_max}, type => 'high', kind => 'ghost' };
+            if ($self->{mode} eq 'auto' && (!defined $self->{_anchor_index} || $self->{_follow_max_x1} > $self->{_anchor_index})) {
+                $self->_set_anchor($self->{_follow_max_x1}, 'ghost');
+                $reanchored = 1;
+            }
+            $self->{_px1} = $self->{_follow_max_x1}; $self->{_py1} = $self->{_follow_max};
+        }
+
+        # Regular Pivot
+        push @{ $self->{_pivots} }, { index => $cand, price => $min_l, type => 'low', kind => 'regular' };
+        if ( $self->{mode} eq 'auto' && ( !defined $self->{_anchor_index} || $cand > $self->{_anchor_index} ) ) {
+            $self->_set_anchor($cand, 'regular');
             $reanchored = 1;
         }
+
+        $self->{_py1} = $min_l; $self->{_px1} = $cand; $self->{_os} = 0;
+        $self->{_max} = $min_l; $self->{_min} = $min_l;
     }
     return $reanchored;
 }
@@ -198,12 +384,13 @@ sub _check_pivot {
 # disponibles desde $idx hasta la ultima procesada.
 # -----------------------------------------------------------------------------
 sub _set_anchor {
-    my ( $self, $idx ) = @_;
+    my ( $self, $idx, $kind ) = @_;
     my $c = $self->{_c}[$idx];
     return unless defined $c;
 
     $self->{_anchor_index} = $idx;
     $self->{_anchor_price} = $c->{close};
+    $self->{_anchor_kind}  = $kind // 'regular';
 
     $self->{_sum_v}   = 0;
     $self->{_sum_pv}  = 0;

@@ -365,9 +365,10 @@ sub _register_overlays {
         [orderblock      => $self->{orderblock_overlay}],
         [volume_profile  => $self->{volume_profile_overlay}],
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
+        [dynamic_vwap    => $self->{dsvwap_overlay}],
         [fibonacci       => $self->{fibonacci_overlay}],
         [supply_demand   => $self->{supply_demand_overlay}],
-        [trend_channel       => $self->{trend_channel_overlay}],
+        [trend_channel   => $self->{trend_channel_overlay}],
         
         # Phase 2
         [trailing_extremes => $self->{trailing_extremes_overlay}],
