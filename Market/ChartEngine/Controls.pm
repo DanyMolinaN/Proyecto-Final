@@ -375,35 +375,6 @@ sub _build_overlay_option_row {
         }
     }
 
-    # LuxAlgo: Swing/Internal OB Count (1/3/5/10), default 5.
-    if ($key eq 'show_ob_external' || $key eq 'show_ob_internal') {
-        my $count_key = $key eq 'show_ob_external' ? 'ob_external_count' : 'ob_internal_count';
-        my $count_val = $settings->values()->{$count_key};
-        $count_val = 5 unless defined $count_val && "$count_val" =~ /^\d+$/;
-        $self->{_overlay_vars}{$count_key} = 0 + $count_val;
-
-        my $cnt_frame = $row_frame->Frame(-background => '#171b24')->pack(-side => 'right', -padx => 2);
-        for my $n (1, 3, 5, 10) {
-            $cnt_frame->Radiobutton(
-                -text               => "$n",
-                -value              => $n,
-                -variable           => \$self->{_overlay_vars}{$count_key},
-                -indicatoron        => 0,
-                -background         => '#2a2e39',
-                -foreground         => '#e0e3ea',
-                -selectcolor        => '#42a5f5',
-                -activebackground   => '#363a45',
-                -activeforeground   => '#ffffff',
-                -font               => 'Helvetica 7 bold',
-                -padx               => 3,
-                -pady               => 0,
-                -borderwidth        => 0,
-                -command            => sub {
-                    $self->set_overlay_option($count_key, $self->{_overlay_vars}{$count_key});
-                }
-            )->pack(-side => 'left', -padx => 1);
-        }
-    }
 
     return $btn;
 }

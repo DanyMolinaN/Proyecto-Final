@@ -86,7 +86,51 @@ sub calculate {
         my $low1  = $c1->{low};
         next unless defined $high3 && defined $low3 && defined $high1 && defined $low1;
 
-        # Detectar FVG nuevos (antes de evaluar mitigacion de esta barra)
+        # Mitigacion contra low/high de la barra actual (para FVGs ya existentes)
+        my $cur_low  = $c0->{low};
+        my $cur_high = $c0->{high};
+        my @keep;
+        for my $f (@active) {
+            if (($f->{dir} // '') eq 'bull' || ($f->{type} // '') eq 'bullish') {
+                if (defined $cur_low && $cur_low <= $f->{bottom}) {
+                    $f->{state}        = 'deleted';
+                    $f->{filled}       = 1;
+                    $f->{filled_index} = $i;
+                    $f->{mitig_at}     = $i;
+                    $f->{extend_to}    = $i;
+                    $f->{strength}     = 0;
+                    next;   # total → sale de active
+                }
+                if (defined $cur_low && $cur_low < $f->{top}) {
+                    $f->{state}    = 'mitigated';
+                    $f->{mitig_at} //= $i;
+                    $f->{strength} = 0.55;
+                    $f->{top} = $cur_low if $fvg_reduce;
+                }
+            }
+            else {
+                if (defined $cur_high && $cur_high >= $f->{top}) {
+                    $f->{state}        = 'deleted';
+                    $f->{filled}       = 1;
+                    $f->{filled_index} = $i;
+                    $f->{mitig_at}     = $i;
+                    $f->{extend_to}    = $i;
+                    $f->{strength}     = 0;
+                    next;
+                }
+                if (defined $cur_high && $cur_high > $f->{bottom}) {
+                    $f->{state}    = 'mitigated';
+                    $f->{mitig_at} //= $i;
+                    $f->{strength} = 0.55;
+                    $f->{bottom} = $cur_high if $fvg_reduce;
+                }
+            }
+            $f->{extend_to} = $last_index;
+            push @keep, $f;
+        }
+        @active = @keep;
+
+        # Detectar FVG nuevos (después de evaluar mitigacion de FVGs anteriores)
         if ($high3 < $low1) {
             my $fvg = {
                 type          => 'bullish',
@@ -133,50 +177,6 @@ sub calculate {
             push @active, $fvg;
             _trim_history(\@active, $history_max);
         }
-
-        # Mitigacion contra low/high de la barra actual (incluye FVG recien creado)
-        my $cur_low  = $c0->{low};
-        my $cur_high = $c0->{high};
-        my @keep;
-        for my $f (@active) {
-            if (($f->{dir} // '') eq 'bull' || ($f->{type} // '') eq 'bullish') {
-                if (defined $cur_low && $cur_low <= $f->{bottom}) {
-                    $f->{state}        = 'deleted';
-                    $f->{filled}       = 1;
-                    $f->{filled_index} = $i;
-                    $f->{mitig_at}     = $i;
-                    $f->{extend_to}    = $i;
-                    $f->{strength}     = 0;
-                    next;   # total → sale de active
-                }
-                if (defined $cur_low && $cur_low < $f->{top}) {
-                    $f->{state}    = 'mitigated';
-                    $f->{mitig_at} //= $i;
-                    $f->{strength} = 0.55;
-                    $f->{top} = $cur_low if $fvg_reduce;
-                }
-            }
-            else {
-                if (defined $cur_high && $cur_high >= $f->{top}) {
-                    $f->{state}        = 'deleted';
-                    $f->{filled}       = 1;
-                    $f->{filled_index} = $i;
-                    $f->{mitig_at}     = $i;
-                    $f->{extend_to}    = $i;
-                    $f->{strength}     = 0;
-                    next;
-                }
-                if (defined $cur_high && $cur_high > $f->{bottom}) {
-                    $f->{state}    = 'mitigated';
-                    $f->{mitig_at} //= $i;
-                    $f->{strength} = 0.55;
-                    $f->{bottom} = $cur_high if $fvg_reduce;
-                }
-            }
-            $f->{extend_to} = $last_index;
-            push @keep, $f;
-        }
-        @active = @keep;
     }
 
     # Solo se dibujan FVG vivos (active + mitigated parcial). Los deleted

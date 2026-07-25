@@ -41,31 +41,35 @@ sub _apply_lifecycle {
                 : ($c->{high},  $c->{low});
 
             if ($type eq 'bullish') {
+                if (defined $bull_src && $bull_src < $ob_low) {
+                    $state   = 'Invalidated';
+                    $inv_idx = $i;
+                    last;
+                }
                 if (defined $c->{low} && $c->{low} < $ob_high) {
                     my $pct = ($ob_high - $c->{low}) / $height * 100;
                     $pct = 100 if $pct > 100;
                     $max_pct = $pct if $pct > $max_pct;
-                }
-                # David: bull mitiga si bullMitSrc < barLow
-                if (defined $bull_src && $bull_src < $ob_low) {
-                    $state   = 'Mitigated';
-                    $mit_idx = $i;
-                    $inv_idx = $i;
-                    last;
+                    if ($max_pct > 0 && $max_pct < 100 && $state eq 'Detected') {
+                        $state = 'PartiallyMitigated';
+                        $mit_idx = $i;
+                    }
                 }
             }
             else {
+                if (defined $bear_src && $bear_src > $ob_high) {
+                    $state   = 'Invalidated';
+                    $inv_idx = $i;
+                    last;
+                }
                 if (defined $c->{high} && $c->{high} > $ob_low) {
                     my $pct = ($c->{high} - $ob_low) / $height * 100;
                     $pct = 100 if $pct > 100;
                     $max_pct = $pct if $pct > $max_pct;
-                }
-                # David: bear mitiga si bearMitSrc > barHigh
-                if (defined $bear_src && $bear_src > $ob_high) {
-                    $state   = 'Mitigated';
-                    $mit_idx = $i;
-                    $inv_idx = $i;
-                    last;
+                    if ($max_pct > 0 && $max_pct < 100 && $state eq 'Detected') {
+                        $state = 'PartiallyMitigated';
+                        $mit_idx = $i;
+                    }
                 }
             }
         }
@@ -82,7 +86,7 @@ sub _deduplicate {
     my %seen;
     my @out;
     for my $b (reverse @$blocks) {
-        my $key = join(':', $b->{index}, $b->{type});
+        my $key = join(':', $b->{index}, $b->{type}, $b->{scope} // 'swing');
         next if $seen{$key}++;
         unshift @out, $b;
     }
@@ -97,6 +101,7 @@ sub _filter_overlaps {
         my $overlap = 0;
         for my $k (@kept) {
             next if $b->{type} ne $k->{type};
+            next if ($b->{scope} // 'swing') ne ($k->{scope} // 'swing');
             my $max_low = $b->{low} > $k->{low} ? $b->{low} : $k->{low};
             my $min_high = $b->{high} < $k->{high} ? $b->{high} : $k->{high};
             if ($min_high > $max_low) {
