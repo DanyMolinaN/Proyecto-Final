@@ -34,7 +34,7 @@ use Market::MarketData;
 use Market::Core::OverlayManager;
 use Market::Core::OverlaySettings;
 use Market::Core::EngineRegistry;       # <-- registro ordenado de engines
-use Market::Replay;
+use Market::Core::ReplayController;
 use Market::Core::TimeframeManager;
 use Market::Core::ViewportController;
 use Market::Core::YAxisHitTest;
@@ -45,6 +45,7 @@ use Market::Overlays::StructureOverlay;
 use Market::Overlays::FVGOverlay;
 use Market::Overlays::OrderBlockOverlay;
 use Market::Overlays::VolumeProfileOverlay;
+use Market::Overlays::TimePersistenceOverlay;
 use Market::Overlays::DSVWAPOverlay;
 use Market::Overlays::AnchoredVWAPOverlay;
 use Market::Overlays::FibonacciOverlay;
@@ -56,6 +57,17 @@ use Market::Overlays::TrailingExtremesOverlay;
 use Market::Overlays::PremiumDiscountOverlay;
 use Market::Overlays::MTFLevelsOverlay;
 use Market::Overlays::ZZMTFOverlay;
+
+# --- David Tools Integration ---
+use Market::Indicators::ZigZagVP2David;
+use Market::Indicators::ZigZagMTF2David;
+use Market::Indicators::FibonacciDavid;
+use Market::Indicators::LiquidityDavid;
+use Market::Overlays::ZigZagVP2DavidOverlay;
+use Market::Overlays::ZigZagMTF2DavidOverlay;
+use Market::Overlays::FibonacciDavidOverlay;
+use Market::Overlays::LiquidityDavidOverlay;
+use Market::ChartEngine::DavidToolbar;
 
 sub new {
     my ($class, %args) = @_;
@@ -134,6 +146,9 @@ sub new {
     my $volume_profile_overlay = Market::Overlays::VolumeProfileOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
+    my $time_persistence_overlay = Market::Overlays::TimePersistenceOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
     my $anchored_vwap_overlay = Market::Overlays::AnchoredVWAPOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
@@ -170,6 +185,40 @@ sub new {
         settings => $overlay_settings,
     );
 
+    # --- David Tools Integration: indicadores y overlays (Fase 4) ---
+    # Orden critico por cross-dependencies (plan seccion 4.4b):
+    # 1. ZigZagVP2David (sin dependencias)
+    # 2. ZigZagMTF2David (sin dependencias)
+    # 3. FibonacciDavid (depende de ZigZagVP2David para modo auto)
+    # 4. LiquidityDavid (depende de ATR existente + ambos ZigZag David)
+    my $zzvp2d_ind = Market::Indicators::ZigZagVP2David->new(
+        market_data => $market_data,
+    );
+    my $zzmtf2d_ind = Market::Indicators::ZigZagMTF2David->new(
+        market_data => $market_data,
+        resolution  => '5m',   # default; cambiable via DavidToolbar
+    );
+    my $fibd_ind = Market::Indicators::FibonacciDavid->new(
+        market_data  => $market_data,
+        source_zzvp2 => $zzvp2d_ind,   # modo auto usa pivots del ZigZagVP2
+        mode         => 'auto',
+    );
+    # Liquidity David: reusar el ATR ya calculado por Kevin (si disponible)
+    my $atr_existing = ($indicator_manager && $indicator_manager->can('get'))
+        ? $indicator_manager->get('atr')
+        : undef;
+    my $liqd_ind = Market::Indicators::LiquidityDavid->new(
+        market_data => $market_data,
+        atr         => $atr_existing,   # puede ser undef; LiquidityDavid lo tolera
+        zzmtf       => $zzmtf2d_ind,
+        zzvp        => $zzvp2d_ind,
+    );
+
+    my $zzvp2d_ov   = Market::Overlays::ZigZagVP2DavidOverlay->new(   source => $zzvp2d_ind  );
+    my $zzmtf2d_ov  = Market::Overlays::ZigZagMTF2DavidOverlay->new(  source => $zzmtf2d_ind );
+    my $fibd_ov     = Market::Overlays::FibonacciDavidOverlay->new(   source => $fibd_ind    );
+    my $liqd_ov     = Market::Overlays::LiquidityDavidOverlay->new(   source => $liqd_ind    );
+
     my $self = {
         canvas               => $canvas,
         market_data          => $market_data,
@@ -177,15 +226,7 @@ sub new {
         engine_registry      => $engine_registry,      # <-- unica fuente de engines
         overlay_manager      => $args{overlay_manager} || Market::Core::OverlayManager->new(),
         overlay_settings     => $overlay_settings,
-        replay_controller    => $args{replay_controller} || Market::Replay->new(
-            market     => $market_data,
-            indicators => $indicator_manager,
-            schedule   => sub {
-                my ($delay_ms, $cb) = @_;
-                return unless $canvas;
-                $canvas->after($delay_ms, $cb);
-            },
-        ),
+        replay_controller    => $args{replay_controller} || Market::Core::ReplayController->new(),
         timeframe_manager    => $args{timeframe_manager} || Market::Core::TimeframeManager->new(),
         viewport_controller  => $args{viewport_controller} || Market::Core::ViewportController->new(),
         price_panel          => $args{price_panel} || Market::Panels::PricePanel->new(),
@@ -198,6 +239,7 @@ sub new {
         fvg_overlay          => $fvg_overlay,
         orderblock_overlay   => $orderblock_overlay,
         volume_profile_overlay => $volume_profile_overlay,
+        time_persistence_overlay => $time_persistence_overlay,
         anchored_vwap_overlay => $anchored_vwap_overlay,
         dsvwap_overlay       => $dsvwap_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
@@ -207,6 +249,17 @@ sub new {
         premium_discount_overlay  => $premium_discount_overlay,
         mtf_levels_overlay        => $mtf_levels_overlay,
         zzmtf_overlay             => $zzmtf_overlay,
+
+        # David Tools overlays
+        zzvp2d_overlay   => $zzvp2d_ov,
+        zzmtf2d_overlay  => $zzmtf2d_ov,
+        fibd_overlay     => $fibd_ov,
+        liqd_overlay     => $liqd_ov,
+        # David Tools indicators (referencias para DavidToolbar)
+        zzvp2d_ind       => $zzvp2d_ind,
+        zzmtf2d_ind      => $zzmtf2d_ind,
+        fibd_ind         => $fibd_ind,
+        liqd_ind         => $liqd_ind,
 
         width                => $width,
         height               => $height,
@@ -252,7 +305,7 @@ sub new {
     $self->{price_panel}->set_scale($price_scale);
     $self->{atr_panel}->set_scale($atr_scale);
     $self->{overlay_manager}->initialize() if $self->{overlay_manager} && $self->{overlay_manager}->can('initialize');
-
+    $self->{replay_controller}->initialize() if $self->{replay_controller} && $self->{replay_controller}->can('initialize');
     $self->{timeframe_manager}->initialize() if $self->{timeframe_manager} && $self->{timeframe_manager}->can('initialize');
     $self->{viewport_controller}->initialize() if $self->{viewport_controller} && $self->{viewport_controller}->can('initialize');
     $self->_register_overlays();
@@ -261,18 +314,45 @@ sub new {
         $self->{timeframe_manager}->set_active($initial_tf) if defined $initial_tf;
     }
     $self->{candle_width} = $candle_width;
+
+    # --- David Tools: registrar indicadores en indicator_manager (si existe) ---
+    # lazy_tf: no se recalculan en cada cambio de temporalidad del chart
+    # (cuesta ~5s). Se recomputan on-demand al activar el boton del toolbar
+    # o si el overlay ya esta activo al cambiar de TF.
+    if ( $self->{indicator_manager} && $self->{indicator_manager}->can('register') ) {
+        $self->{indicator_manager}->register('zigzag_vp2_david',  $zzvp2d_ind, lazy_tf => 1);
+        $self->{indicator_manager}->register('zigzag_mtf2_david', $zzmtf2d_ind, lazy_tf => 1);
+        $self->{indicator_manager}->register('fibonacci_david',    $fibd_ind, lazy_tf => 1);
+        $self->{indicator_manager}->register('liquidity_david',    $liqd_ind, lazy_tf => 1);
+    }
+
+    # --- David Tools: crear el toolbar (requiere que el parent widget exista) ---
+    # El parent se pasa como arg desde market.pl; si no se pasa, el toolbar
+    # no se construye (el resto del sistema funciona sin el).
+    if ( my $toolbar_parent = $args{david_toolbar_parent} ) {
+        $self->{david_toolbar} = Market::ChartEngine::DavidToolbar->new(
+            parent           => $toolbar_parent,
+            overlay_manager  => $self->{overlay_manager},
+            chart_engine     => $self,
+            overlay_settings => $overlay_settings,
+            indicator_refs   => {
+                zigzag_vp2  => $zzvp2d_ind,
+                zigzag_mtf2 => $zzmtf2d_ind,
+                fibonacci   => $fibd_ind,
+                liquidity   => $liqd_ind,
+            },
+            overlay_refs => {
+                zigzag_vp2  => $zzvp2d_ov,
+                zigzag_mtf2 => $zzmtf2d_ov,
+                fibonacci   => $fibd_ov,
+                liquidity   => $liqd_ov,
+            },
+        );
+        $self->{david_toolbar}->build();
+    }
+
     # Carga inicial de datos: construye la cache de analisis una sola vez, para
     # que el primer (y todos los) render() solo consuma resultados cacheados.
-    if ($self->{replay_controller} && $self->{replay_controller}->can('set_on_change')) {
-        $self->{replay_controller}->set_on_change(sub {
-            $self->_replay_apply();
-        });
-    } else {
-        $self->{replay_controller}->{on_change} = sub {
-            $self->_replay_apply();
-        };
-    }
-    
     $self->rebuild_analysis_cache();
     $self->_replay_sync_controls();
     return $self;

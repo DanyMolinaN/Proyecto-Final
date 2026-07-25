@@ -364,6 +364,7 @@ sub _register_overlays {
         [structure       => $self->{structure_overlay}],
         [orderblock      => $self->{orderblock_overlay}],
         [volume_profile  => $self->{volume_profile_overlay}],
+        [time_persistence => $self->{time_persistence_overlay}],
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
         [dynamic_vwap    => $self->{dsvwap_overlay}],
         [fibonacci       => $self->{fibonacci_overlay}],
@@ -375,13 +376,23 @@ sub _register_overlays {
         [premium_discount  => $self->{premium_discount_overlay}],
         [mtf_levels        => $self->{mtf_levels_overlay}],
         [zzmtf_overlay     => $self->{zzmtf_overlay}],
+
+        # --- David Tools (desactivados por defecto; DavidToolbar los activa) ---
+        [zigzag_vp2_david  => $self->{zzvp2d_overlay},  1],
+        [zigzag_mtf2_david => $self->{zzmtf2d_overlay}, 1],
+        [fibonacci_david   => $self->{fibd_overlay},    1],
+        [liquidity_david   => $self->{liqd_overlay},    1],
     );
 
     for my $entry (@overlays) {
-        my ($name, $overlay) = @$entry;
+        my ($name, $overlay, $no_enable) = @$entry;
         next unless $overlay;
         $self->{overlay_manager}->register($name, $overlay);
-        $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
+        # Los overlays David (no_enable=1) arrancan desactivados; el DavidToolbar
+        # los activa cuando el usuario pulsa el boton correspondiente.
+        unless ($no_enable) {
+            $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');
+        }
     }
     $self->_sync_overlay_layer_state();
     return $self;

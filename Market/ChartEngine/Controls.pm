@@ -30,13 +30,13 @@ sub build_control_panel {
     )->pack(-side => 'left', -padx => 4);
 
     my @replay_btns = (
-        ['Select', sub { $self->_replay_select_start(); }],
-        ['|< Start',  sub { $self->_replay_enter(); }],
-        ['< Step',      sub { $self->_replay_step_backward(); }],
-        ['Play / ||', sub { $self->_replay_toggle_play(); }],
-        ['Step >',      sub { $self->_replay_step_forward(); }],
-        ['Fast >>',   sub { $self->_replay_fast_forward(); }],
-        ['Exit [x]',   sub { $self->_replay_exit(); }],
+        ['Seleccionar', sub { $self->_replay_select_start(); }],
+        ['Inicio',  sub { $self->_replay_enter(); }],
+        ['Play/Pausa', sub { $self->_replay_toggle_play(); }],
+        ['<<',      sub { $self->_replay_step_backward(); }],
+        ['>>',      sub { $self->_replay_step_forward(); }],
+        ['FF >>',   sub { $self->_replay_fast_forward(); }],
+        ['Salir',   sub { $self->_replay_exit(); }],
     );
     for my $btn (@replay_btns) {
         $replay_frame->Button(
@@ -431,28 +431,12 @@ sub set_overlay_option {
     my ($self, $key, $enabled) = @_;
     return unless $self->{overlay_settings};
     $self->{overlay_settings}->set($key, $enabled);
-
-    # ── VWAP mutual exclusion ────────────────────────────────────────────────
-    # Dynamic VWAP y Anchored VWAP son mutuamente excluyentes en el panel:
-    # activar uno desactiva el otro tanto en el setting interno como en el
-    # checkbox visual (-variable bindeado a _overlay_vars).
-    if ($enabled) {
-        my $other_key;
-        if    ($key eq 'show_dynamic_vwap')   { $other_key = 'show_anchored_vwap'; }
-        elsif ($key eq 'show_anchored_vwap')  { $other_key = 'show_dynamic_vwap';  }
-
-        if ($other_key) {
-            $self->{overlay_settings}->set($other_key, 0);
-            # Actualizar la variable Perl a la que el Checkbutton esta bindeado
-            # para que la UI refleje el estado desmarcado sin otro click.
-            $self->{_overlay_vars}{$other_key} = 0
-                if exists $self->{_overlay_vars}{$other_key};
-        }
-    }
-    # ────────────────────────────────────────────────────────────────────────
-
     $self->{overlay_settings}->save() if $self->{overlay_settings}->can('save');
     $self->_sync_overlay_layer_state();
+    # Al activar un overlay, recalcular solo engines necesarios (lazy real).
+    if ($enabled && $self->can('rebuild_analysis_cache')) {
+        $self->rebuild_analysis_cache();
+    }
     $self->render();
     return $self;
 }
@@ -497,6 +481,7 @@ sub _sync_overlay_layer_state {
     my $anchored_vwap_on  = $s->enabled('show_anchored_vwap');
     my $dynamic_vwap_on   = $s->enabled('show_dynamic_vwap');
     my $fibonacci_on      = $s->enabled('show_fibonacci');
+    my $time_persistence_on = $s->enabled('show_time_persistence');
     my $supply_demand_on  = $s->enabled('show_supply_demand');
     my $trend_channel_on      = $s->enabled('show_trend_channel');
     
@@ -510,6 +495,7 @@ sub _sync_overlay_layer_state {
         [fvg           => $fvg_on],
         [orderblock    => $orderblock_on],
         [volume_profile => $volume_profile_on],
+        [time_persistence => $time_persistence_on],
         [anchored_vwap => $anchored_vwap_on],
         [dynamic_vwap  => $dynamic_vwap_on],
         [fibonacci     => $fibonacci_on],
@@ -574,6 +560,7 @@ sub _key_to_overlay_map {
         show_anchored_vwap      => 'anchored_vwap',
         show_dynamic_vwap       => 'dynamic_vwap',
         show_volume_profile     => 'volume_profile',
+        show_time_persistence   => 'time_persistence',
         show_signals            => undef,
         show_entries            => undef,
     );

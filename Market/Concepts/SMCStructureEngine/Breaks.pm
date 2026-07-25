@@ -3,8 +3,12 @@ package Market::Concepts::SMCStructureEngine;
 # =============================================================================
 # SMCStructureEngine::Breaks
 # =============================================================================
-# BOS/CHoCH y cierre de proyecciones EQH/EQL.
-# Continuacion del paquete Market::Concepts::SMCStructureEngine (split por SRP; sin cambio de API).
+# BOS/CHoCH con crossover/crossunder de close (igual que Pine / David):
+#   bullish: prev.close <= level && cur.close > level
+#   bearish: prev.close >= level && cur.close < level
+#
+# Doble punta: al formarse un nuevo pivote same-side, Pivots.pm resetea
+# crossed=0 y reemplaza el nivel — aqui solo confirmamos el cruce.
 # =============================================================================
 
 use strict;
@@ -14,108 +18,74 @@ sub _check_structure_break {
     my ($self, $candles, $i, %o) = @_;
     my $c = $candles->[$i];
     return unless $c;
-    my $close = $c->{close};
-    return unless defined $close;
+    my $prev = $i > 0 ? $candles->[$i - 1] : undef;
+    return unless $prev;   # ta.crossover/crossunder necesitan vela anterior
+
+    my $close      = $c->{close};
+    my $prev_close = $prev->{close};
+    return unless defined $close && defined $prev_close;
+
     my $confirm_mode = $self->{confirm_mode} // 'close';
-    # En modo 'wick' se confirma con el extremo de la vela (High para cruces
-    # alcistas, Low para cruces bajistas); en 'close' (default) solo el cierre.
-    my $bull_price = ($confirm_mode eq 'wick' && defined $c->{high}) ? $c->{high} : $close;
-    my $bear_price = ($confirm_mode eq 'wick' && defined $c->{low})  ? $c->{low}  : $close;
+    # David/Pine SIEMPRE usa close para crossover. El modo 'wick' es extension
+    # de Kevin: confirma con high/low pero sigue exigiendo cruce real.
+    my $bull_cur  = ($confirm_mode eq 'wick' && defined $c->{high})    ? $c->{high}    : $close;
+    my $bull_prev = ($confirm_mode eq 'wick' && defined $prev->{high}) ? $prev->{high} : $prev_close;
+    my $bear_cur  = ($confirm_mode eq 'wick' && defined $c->{low})     ? $c->{low}     : $close;
+    my $bear_prev = ($confirm_mode eq 'wick' && defined $prev->{low})  ? $prev->{low}  : $prev_close;
+
     my $scope     = $o{scope} // 'swing';
     my $trend_ref = $o{trend_ref};
-    my $open_eq   = $o{open_eq} // {};
     my $bar_index = $o{bar_index} // $i;
 
-    # ── Cruce BULLISH ─────────────────────────────────────────────────────────
+    # ── Cruce BULLISH (crossover) ─────────────────────────────────────────
     my $ph = ${ $o{high_ref} };
     if (defined $ph && defined $ph->{level} && !$ph->{crossed}) {
-        if ($bull_price > $ph->{level}) {
+        my $level = $ph->{level};
+        my $crossover = ($bull_prev <= $level) && ($bull_cur > $level);
+        if ($crossover) {
             my $kind = ($$trend_ref == _BEARISH) ? 'CHoCH' : 'BOS';
             $$trend_ref    = _BULLISH;
-            $ph->{crossed} = 1;   # Req-2: sólo bloquea re-disparo, NO oculta
+            $ph->{crossed} = 1;
 
             my $evt = {
                 kind        => $kind,
                 scope       => $scope,
                 direction   => 'bullish',
                 index       => $i,
-                level       => $ph->{level},
+                level       => $level,
                 swing_index => $ph->{index},
                 swing_high  => 1,
                 swing_low   => 0,
             };
             push @{ $self->{events} }, $evt;
             $self->_push_event($i, $evt);
-
-            # Req-3: cerrar EQL abiertos cuyo nivel quede por debajo del cierre
-            _close_eq_below($open_eq, 'EQL', $close, $bar_index);
         }
     }
 
-    # ── Cruce BEARISH ─────────────────────────────────────────────────────────
+    # ── Cruce BEARISH (crossunder) ────────────────────────────────────────
     my $pl = ${ $o{low_ref} };
     if (defined $pl && defined $pl->{level} && !$pl->{crossed}) {
-        if ($bear_price < $pl->{level}) {
+        my $level = $pl->{level};
+        my $crossunder = ($bear_prev >= $level) && ($bear_cur < $level);
+        if ($crossunder) {
             my $kind = ($$trend_ref == _BULLISH) ? 'CHoCH' : 'BOS';
             $$trend_ref    = _BEARISH;
-            $pl->{crossed} = 1;   # Req-2: sólo bloquea re-disparo, NO oculta
+            $pl->{crossed} = 1;
 
             my $evt = {
                 kind        => $kind,
                 scope       => $scope,
                 direction   => 'bearish',
                 index       => $i,
-                level       => $pl->{level},
+                level       => $level,
                 swing_index => $pl->{index},
                 swing_high  => 0,
                 swing_low   => 1,
             };
             push @{ $self->{events} }, $evt;
             $self->_push_event($i, $evt);
-
-            # Req-3: cerrar EQH abiertos cuyo nivel quede por encima del cierre
-            _close_eq_above($open_eq, 'EQH', $close, $bar_index);
         }
     }
 }
-
-# =============================================================================
-# PRIVATE — _close_eq_below / _close_eq_above
-# Req-3: cierre de EQL/EQH en O(1) mediante HashMap.
-# Se invoca SOLO cuando se confirma un BOS/CHoCH que cruza el nivel.
-# =============================================================================
-sub _close_eq_below {
-    my ($open_eq, $kind, $close_price, $bar_index) = @_;
-    for my $key (keys %$open_eq) {
-        next unless $key =~ /^\Q$kind\E\|(.+)$/;
-        my $lvl = $1 + 0;
-        next unless $close_price > $lvl;   # el cierre superó el EQL → termina
-        for my $evt (@{ $open_eq->{$key} || [] }) {
-            next unless $evt->{is_open};
-            $evt->{end_index} = $bar_index;
-            $evt->{is_open}   = 0;
-        }
-        delete $open_eq->{$key};   # ya no está abierto
-    }
-}
-
-sub _close_eq_above {
-    my ($open_eq, $kind, $close_price, $bar_index) = @_;
-    for my $key (keys %$open_eq) {
-        next unless $key =~ /^\Q$kind\E\|(.+)$/;
-        my $lvl = $1 + 0;
-        next unless $close_price < $lvl;   # el cierre cayó bajo el EQH → termina
-        for my $evt (@{ $open_eq->{$key} || [] }) {
-            next unless $evt->{is_open};
-            $evt->{end_index} = $bar_index;
-            $evt->{is_open}   = 0;
-        }
-        delete $open_eq->{$key};
-    }
-}
-
-# =============================================================================
-# PRIVATE — helpers
-# =============================================================================
 
 1;

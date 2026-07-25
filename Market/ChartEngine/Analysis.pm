@@ -20,12 +20,12 @@ sub invalidate_analysis_cache {
     return $self;
 }
 
-# rebuild_analysis_cache()
-# Delega el calculo completo al EngineRegistry en orden de dependencias.
-# ChartEngine NO orquesta engines directamente: eso es responsabilidad del
-# registry (separacion estricta calculo / render).
+# rebuild_analysis_cache(%opts)
+# opts:
+#   only => \@engine_names  — rebuild parcial (replay)
+#   force_all => 1          — ignorar settings (rebuild completo)
 sub rebuild_analysis_cache {
-    my ($self) = @_;
+    my ($self, %opts) = @_;
     return unless $self->{market_data};
     return unless $self->{engine_registry};
 
@@ -42,8 +42,6 @@ sub rebuild_analysis_cache {
     my $view_start = defined $self->{start_idx} ? $self->{start_idx} - $buffer : 0;
     $view_start = 0 if $view_start < 0;
 
-    # Argumentos comunes a todos los engines (cada engine solo usa los que
-    # necesita; los extra se ignoran silenciosamente).
     my %engine_args = (
         replay_controller => $self->{replay_controller},
         timeframe         => $timeframe,
@@ -52,22 +50,51 @@ sub rebuild_analysis_cache {
         overlay_settings  => $self->{overlay_settings},
     );
 
-    # Activar modo visible_only en Liquidity si lo soporta
-    my $liq_eng = $self->{engine_registry}->get('liquidity');
-    if ($liq_eng && $liq_eng->can('visible_only')) {
-        $liq_eng->visible_only(1);
+    # Rebuild selectivo: solo engines cuyos overlays estan activos.
+    # Evita recalcular DSVWAP/VP/AVWAP/etc. en cada tecla 1-8.
+    my @wanted;
+    if ($opts{force_all}) {
+        @wanted = $self->{engine_registry}->names();
+    }
+    elsif ($opts{only}) {
+        @wanted = @{ $opts{only} };
+    }
+    else {
+        @wanted = $self->_wanted_engines_from_settings();
     }
 
-    # El EngineRegistry calcula todos los engines en orden de registro,
-    # resolviendo dependencias automaticamente via los calcs declarados.
-    my $raw_cache = $self->{engine_registry}->rebuild(
-        $self->{market_data}, %engine_args
-    );
+    my $raw_cache = {};
+    if (@wanted) {
+        $raw_cache = $self->{engine_registry}->rebuild(
+            $self->{market_data},
+            %engine_args,
+            only       => \@wanted,
+            keep_cache => ($opts{keep_cache} ? 1 : 0),
+        ) || {};
+    }
+    elsif (!$opts{keep_cache}) {
+        # Nada visible: vaciar cache de analisis sin tocar engines pesados
+        $raw_cache = {};
+    }
+    else {
+        $raw_cache = $self->{engine_registry}->get_cache() || {};
+    }
 
-    # Post-proceso del cache SMC: enriquecer liquidity con estructura
+    # Fusionar con cache previa en rebuild parcial (replay)
+    if ($opts{keep_cache} && $self->{analysis_cache}) {
+        for my $k (keys %{ $self->{analysis_cache} }) {
+            $raw_cache->{$k} = $self->{analysis_cache}{$k}
+                unless exists $raw_cache->{$k} && defined $raw_cache->{$k};
+        }
+        # raw usa nombres de engine; analysis_cache usa aliases
+        $raw_cache->{smc_structure} //= $self->{analysis_cache}{smc_structure};
+        $raw_cache->{structure}     //= $self->{analysis_cache}{structure};
+    }
+
     my $smc_structure_data = $raw_cache->{smc_structure} || {};
     my $liquidity_data     = $raw_cache->{liquidity}     || {};
 
+    my $liq_eng = $self->{engine_registry}->get('liquidity');
     if (ref $liquidity_data eq 'HASH') {
         $liquidity_data->{eq_levels} = $self->_eq_levels_from_smc_structure($smc_structure_data);
         if ($liq_eng && $liq_eng->can('apply_structure_filter')) {
@@ -80,7 +107,6 @@ sub rebuild_analysis_cache {
         $self->_enrich_liquidity_with_structure_scope($liquidity_data, $smc_structure_data);
     }
 
-    # Construir vista legacy de estructura (para overlays que la esperan)
     my $structure_data = $self->_legacy_structure_view_from_smc($smc_structure_data);
 
     $self->{analysis_cache} = {
@@ -90,6 +116,7 @@ sub rebuild_analysis_cache {
         fvg               => $raw_cache->{fvg},
         orderblock        => $raw_cache->{orderblock},
         volume_profile    => $raw_cache->{volume_profile},
+        time_persistence  => $raw_cache->{time_persistence},
         anchored_vwap     => $raw_cache->{anchored_vwap},
         dynamic_vwap      => $raw_cache->{dynamic_vwap},
         fibonacci         => $raw_cache->{fibonacci},
@@ -101,6 +128,87 @@ sub rebuild_analysis_cache {
         zzmtf_overlay     => $raw_cache->{zzmtf_overlay},
     };
     return $self->{analysis_cache};
+}
+
+# _wanted_engines_from_settings() -> @engine_names
+# Mapea toggles OverlaySettings -> engines necesarios (+ dependencias).
+sub _wanted_engines_from_settings {
+    my ($self) = @_;
+    my $s = $self->{overlay_settings};
+    return $self->{engine_registry}->names() unless $s && $s->can('enabled');
+
+    my $on = sub {
+        my ($key) = @_;
+        return $s->enabled($key) ? 1 : 0;
+    };
+
+    my %need;
+
+    # Structure / BOS / CHoCH / ZigZag estructura / swings
+    if ($on->('show_swing_high') || $on->('show_swing_low')
+        || $on->('show_hh') || $on->('show_hl') || $on->('show_lh') || $on->('show_ll')
+        || $on->('show_bos_external') || $on->('show_bos_internal')
+        || $on->('show_choch_external') || $on->('show_choch_internal')
+        || $on->('show_internal_zigzag') || $on->('show_external_zigzag')
+        || $on->('show_internal_swings') || $on->('show_external_swings'))
+    {
+        $need{smc_structure} = 1;
+    }
+
+    if ($on->('show_eqh') || $on->('show_eql')) {
+        $need{smc_structure} = 1;
+        $need{liquidity} = 1;
+    }
+
+    if ($on->('show_liquidity_levels') || $on->('show_internal_liquidity')
+        || $on->('show_external_liquidity') || $on->('show_sweeps')
+        || $on->('show_grabs') || $on->('show_runs'))
+    {
+        $need{liquidity} = 1;
+        $need{smc_structure} = 1;
+    }
+
+    if ($on->('show_fvg')) {
+        $need{smc_structure} = 1;
+        $need{fvg} = 1;
+    }
+
+    if ($on->('show_ob_external') || $on->('show_ob_internal') || $on->('show_orderblocks')) {
+        $need{smc_structure} = 1;
+        $need{orderblock} = 1;
+    }
+
+    if ($on->('show_trend_channel')) {
+        $need{smc_structure} = 1;
+        $need{orderblock} = 1;
+        $need{trend_channel} = 1;
+    }
+
+    if ($on->('show_fibonacci')) {
+        $need{smc_structure} = 1;
+        $need{fibonacci} = 1;
+    }
+
+    if ($on->('show_strong_weak_hl')) {
+        $need{smc_structure} = 1;
+        $need{trailing_extremes} = 1;
+    }
+
+    if ($on->('show_premium_discount')) {
+        $need{smc_structure} = 1;
+        $need{trailing_extremes} = 1;
+        $need{premium_discount} = 1;
+    }
+
+    $need{anchored_vwap}     = 1 if $on->('show_anchored_vwap');
+    $need{dynamic_vwap}      = 1 if $on->('show_dynamic_vwap');
+    $need{volume_profile}    = 1 if $on->('show_volume_profile');
+    $need{time_persistence}  = 1 if $on->('show_time_persistence');
+    $need{supply_demand}     = 1 if $on->('show_supply_demand');
+    $need{mtf_levels}        = 1 if $on->('show_daily_levels') || $on->('show_weekly_levels') || $on->('show_monthly_levels');
+    $need{zzmtf_overlay}     = 1 if $on->('show_zzmtf_internal') || $on->('show_zzmtf_external');
+
+    return grep { $need{$_} } $self->{engine_registry}->names();
 }
 
 # _enrich_liquidity_with_structure_scope($liquidity_data, $structure_data)
@@ -144,19 +252,19 @@ sub _eq_levels_from_smc_structure {
         for my $evt (@{ $smc_structure_data->{$key} || [] }) {
             next unless $evt && ref $evt eq 'HASH';
             next unless defined $evt->{level};
-            # Origen/fin del Equal High/Low = los dos pivotes iguales
-            # (prev_index → swing_index). Fallback a indices legacy si faltan.
-            my $first  = $evt->{prev_index}  // $evt->{swing_index};
-            my $second = $evt->{swing_index} // $evt->{index};
+            # David: EQH/EQL une idx_from → idx_to (pivote a pivote).
+            # No proyectar mas alla del segundo pivote.
+            my $first  = $evt->{idx_from} // $evt->{prev_index}  // $evt->{swing_index};
+            my $second = $evt->{idx_to}   // $evt->{swing_index} // $evt->{index};
             next unless defined $first && defined $second;
             push @levels, {
                 first_index  => $first,
                 second_index => $second,
                 level        => $evt->{level},
                 type         => $type,
-                start_index  => $evt->{start_index} // $first,
-                end_index    => $evt->{end_index},
-                is_open      => $evt->{is_open} ? 1 : 0,
+                start_index  => $first,
+                end_index    => $second,
+                is_open      => 0,
                 source       => 'SMCStructureEngine',
             };
         }
@@ -231,6 +339,7 @@ sub _prepare_overlay_data {
     my $fvg_data       = $cache->{fvg};
     my $orderblock_data = $cache->{orderblock};
     my $volume_profile_data = $cache->{volume_profile};
+    my $time_persistence_data = $cache->{time_persistence};
     my $anchored_vwap_data = $cache->{anchored_vwap};
     my $dynamic_vwap_data = $cache->{dynamic_vwap};
     my $fibonacci_data = $cache->{fibonacci};
@@ -249,6 +358,7 @@ sub _prepare_overlay_data {
         fvg            => $fvg_data,
         orderblock     => $orderblock_data,
         volume_profile => $volume_profile_data,
+        time_persistence => $time_persistence_data,
         anchored_vwap  => $anchored_vwap_data,
         dynamic_vwap   => $dynamic_vwap_data,
         fibonacci      => $fibonacci_data,

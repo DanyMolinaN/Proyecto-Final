@@ -1,3 +1,4 @@
+# DEPRECATED — replaced by ZigZagMTF2David (David variant)
 package Market::Indicators::ZigZagMTF;
 
 # =============================================================================

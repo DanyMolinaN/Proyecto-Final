@@ -1,14 +1,40 @@
 package Market::Concepts::FVGEngine;
 
+# =============================================================================
+# Market::Concepts::FVGEngine
+#
+# Replica fiel de la logica FVG de Proyecto_David SMC_Structures2
+# (script Pine "SMC Structures and FVG" / LudoGH68):
+#
+#   isBullishFVG = high[i-3] < low[i-1]
+#   isBearishFVG = low[i-3]  > high[i-1]
+#
+# Mitigacion:
+#   - PARCIAL: low < top (bull) / high > bottom (bear) → state='mitigated'
+#     (sigue vivo, se dibuja en gris; opcionalmente reduce la caja).
+#   - TOTAL:   low <= bottom (bull) / high >= top (bear) → state='deleted'
+#     (se elimina de active; deja de dibujarse).
+#
+# Historial: fvg_history_max (default 5) — al superar max+1 se descarta el
+# FVG activo mas antiguo (igual que fvgHistoryNbr del Pine).
+#
+# NO usa max_age: un FVG no mitigado totalmente permanece hasta borrado
+# total o hasta caer fuera del limite de historial.
+# =============================================================================
+
 use strict;
 use warnings;
+
+use constant DEFAULT_FVG_HISTORY_MAX => 5;
 
 sub new {
     my ($class, %args) = @_;
     my $self = {
-        gaps => [],
-        active => [],
-        metadata => {},
+        gaps            => [],
+        active          => [],
+        metadata        => {},
+        fvg_history_max => $args{fvg_history_max} // DEFAULT_FVG_HISTORY_MAX,
+        fvg_reduce      => $args{fvg_reduce}      // 0,
         %args,
     };
     bless $self, $class;
@@ -17,8 +43,8 @@ sub new {
 
 sub reset {
     my ($self) = @_;
-    $self->{gaps} = [];
-    $self->{active} = [];
+    $self->{gaps}     = [];
+    $self->{active}   = [];
     $self->{metadata} = {};
     return $self;
 }
@@ -33,113 +59,139 @@ sub calculate {
     my $visible_limit = defined $replay_controller && $replay_controller->can('visible_limit')
         ? $replay_controller->visible_limit($total)
         : undef;
-    # Ultimo indice analizable: respeta el puntero de Replay (no mira el futuro).
     my $last_index = (defined $visible_limit && $visible_limit >= 0 && $visible_limit < $total)
         ? $visible_limit : ($total - 1);
 
-    # Horizonte de desvanecimiento (en velas). Pasado este lapso la FVG se
-    # considera completamente desvanecida y deja de dibujarse.
-    my $max_age = $args{max_age_bars} || $self->{max_age_bars} || 50;
+    my $history_max = $args{fvg_history_max} // $self->{fvg_history_max} // DEFAULT_FVG_HISTORY_MAX;
+    my $fvg_reduce  = $args{fvg_reduce}      // $self->{fvg_reduce}      // 0;
 
-    my $candles = [];
-    for (my $i = 0; $i <= $last_index; $i++) {
-        my $c = $market_data->get_candle($i);
-        push @$candles, $c if $c;
+    my @candles;
+    $#candles = $last_index;
+    for my $i (0 .. $last_index) {
+        $candles[$i] = $market_data->get_candle($i);
     }
 
-    my $gaps = [];
-    my $min_index = 2;
-    if (defined $args{view_start}) {
-        my $buf = ($args{max_age_bars} || $self->{max_age_bars} || 50) * 4;
-        $min_index = $args{view_start} - $buf;
-        $min_index = 2 if $min_index < 2;
-    }
+    my @all;      # historial completo (incluye deleted)
+    my @active;   # vivos (active + mitigated parcial)
 
-    for (my $i = 2; $i <= $#$candles; $i++) {
-        next if $i < $min_index;
-        my $c1 = $candles->[$i - 2];
-        my $c2 = $candles->[$i - 1];
-        my $c3 = $candles->[$i];
-        next unless $c1 && $c2 && $c3;
+    for my $i (3 .. $last_index) {
+        my $c0 = $candles[$i];
+        my $c1 = $candles[$i - 1];
+        my $c3 = $candles[$i - 3];
+        next unless $c0 && $c1 && $c3;
 
-        my $bullish = $c3->{low}  > $c1->{high};
-        my $bearish = $c3->{high} < $c1->{low};
-        next unless $bullish || $bearish;
+        my $high3 = $c3->{high};
+        my $low3  = $c3->{low};
+        my $high1 = $c1->{high};
+        my $low1  = $c1->{low};
+        next unless defined $high3 && defined $low3 && defined $high1 && defined $low1;
 
-        # Edad = velas transcurridas desde la creacion hasta la ultima analizable.
-        my $age = $last_index - $i;
-
-        # Limites de precio de la zona (p_lo inferior, p_hi superior).
-        my ($p_lo, $p_hi);
-        if ($bullish) { $p_lo = $c1->{high}; $p_hi = $c3->{low}; }
-        else          { $p_lo = $c3->{high}; $p_hi = $c1->{low}; }
-
-        # Mitigacion: ¿alguna vela posterior reentra en la zona? (dentro del
-        # horizonte). Bullish -> el precio baja al techo inferior; bearish ->
-        # el precio sube al piso superior.
-        my $filled_index;
-        my $scan_end = $i + $max_age;
-        $scan_end = $#$candles if $scan_end > $#$candles;
-        for (my $j = $i + 1; $j <= $scan_end; $j++) {
-            my $cj = $candles->[$j];
-            next unless $cj;
-            if ($bullish) { if ($cj->{low}  <= $p_lo) { $filled_index = $j; last; } }
-            else          { if ($cj->{high} >= $p_hi) { $filled_index = $j; last; } }
+        # Detectar FVG nuevos (antes de evaluar mitigacion de esta barra)
+        if ($high3 < $low1) {
+            my $fvg = {
+                type          => 'bullish',
+                dir           => 'bull',
+                top           => $low1,
+                bottom        => $high3,
+                mid_price     => ($low1 + $high3) / 2,
+                price         => ($low1 + $high3) / 2,
+                size          => abs($low1 - $high3),
+                index         => $i - 2,
+                created_index => $i,
+                idx_start     => $i - 2,
+                extend_to     => $last_index,
+                state         => 'active',
+                filled        => 0,
+                filled_index  => undef,
+                mitig_at      => undef,
+                strength      => 1,
+            };
+            push @all, $fvg;
+            push @active, $fvg;
+            _trim_history(\@active, $history_max);
         }
-        my $filled = defined $filled_index ? 1 : 0;
-
-        my $touched_index;
-        my $state = 'Detected';
-        if ($filled) {
-            $state = 'Mitigated';
+        if ($low3 > $high1) {
+            my $fvg = {
+                type          => 'bearish',
+                dir           => 'bear',
+                top           => $low3,
+                bottom        => $high1,
+                mid_price     => ($low3 + $high1) / 2,
+                price         => ($low3 + $high1) / 2,
+                size          => abs($low3 - $high1),
+                index         => $i - 2,
+                created_index => $i,
+                idx_start     => $i - 2,
+                extend_to     => $last_index,
+                state         => 'active',
+                filled        => 0,
+                filled_index  => undef,
+                mitig_at      => undef,
+                strength      => 1,
+            };
+            push @all, $fvg;
+            push @active, $fvg;
+            _trim_history(\@active, $history_max);
         }
-        else {
-            for (my $j = $i + 1; $j <= $scan_end; $j++) {
-                my $cj = $candles->[$j];
-                next unless $cj;
-                my $touched = $bullish
-                    ? ($cj->{low} <= $p_hi)
-                    : ($cj->{high} >= $p_lo);
-                if ($touched) {
-                    $touched_index = $j;
-                    $state = 'Touched';
-                    last;
+
+        # Mitigacion contra low/high de la barra actual (incluye FVG recien creado)
+        my $cur_low  = $c0->{low};
+        my $cur_high = $c0->{high};
+        my @keep;
+        for my $f (@active) {
+            if (($f->{dir} // '') eq 'bull' || ($f->{type} // '') eq 'bullish') {
+                if (defined $cur_low && $cur_low <= $f->{bottom}) {
+                    $f->{state}        = 'deleted';
+                    $f->{filled}       = 1;
+                    $f->{filled_index} = $i;
+                    $f->{mitig_at}     = $i;
+                    $f->{extend_to}    = $i;
+                    $f->{strength}     = 0;
+                    next;   # total → sale de active
+                }
+                if (defined $cur_low && $cur_low < $f->{top}) {
+                    $f->{state}    = 'mitigated';
+                    $f->{mitig_at} //= $i;
+                    $f->{strength} = 0.55;
+                    $f->{top} = $cur_low if $fvg_reduce;
                 }
             }
+            else {
+                if (defined $cur_high && $cur_high >= $f->{top}) {
+                    $f->{state}        = 'deleted';
+                    $f->{filled}       = 1;
+                    $f->{filled_index} = $i;
+                    $f->{mitig_at}     = $i;
+                    $f->{extend_to}    = $i;
+                    $f->{strength}     = 0;
+                    next;
+                }
+                if (defined $cur_high && $cur_high > $f->{bottom}) {
+                    $f->{state}    = 'mitigated';
+                    $f->{mitig_at} //= $i;
+                    $f->{strength} = 0.55;
+                    $f->{bottom} = $cur_high if $fvg_reduce;
+                }
+            }
+            $f->{extend_to} = $last_index;
+            push @keep, $f;
         }
-
-        # Fuerza se calcula en el overlay segun el viewport actual (permite pan
-        # sin invalidar cache). Aqui solo marcamos mitigacion.
-        my $strength = 1;
-        $strength = 0.35 if $filled;
-
-        push @$gaps, {
-            type          => $bullish ? 'bullish' : 'bearish',
-            top           => $p_hi,
-            bottom        => $p_lo,
-            price         => ($p_hi + $p_lo) / 2,
-            mid_price     => ($p_hi + $p_lo) / 2,
-            size          => abs($p_hi - $p_lo),
-            index         => $i,
-            created_index => $i,
-            extend_to     => ($filled ? $filled_index : $last_index),
-            age           => $age,
-            strength      => $strength,
-            filled        => $filled,
-            filled_index  => $filled_index,
-            touched_index => $touched_index,
-            state         => $state,
-        };
+        @active = @keep;
     }
 
-    $self->{gaps}   = $gaps;
-    $self->{active} = [ grep { !$_->{filled} } @$gaps ];
+    # Solo se dibujan FVG vivos (active + mitigated parcial). Los deleted
+    # quedan en gaps para auditoria pero el overlay filtra por state/filled.
+    $self->{gaps}   = \@all;
+    $self->{active} = \@active;
     $self->{metadata} = {
-        timeframe     => $args{timeframe} || $market_data->active_tf(),
-        gap_count     => scalar(@$gaps),
-        active_count  => scalar(@{ $self->{active} }),
-        visible_limit => $visible_limit,
-        max_age_bars  => $max_age,
+        timeframe       => $args{timeframe} || ($market_data->can('active_tf') ? $market_data->active_tf() : undef),
+        gap_count       => scalar(@all),
+        active_count    => scalar(@active),
+        visible_limit   => $visible_limit,
+        fvg_history_max => $history_max,
+        fvg_reduce      => $fvg_reduce,
+        # Sin max_age: compat con overlay legacy (valor alto = no fade prematuro)
+        max_age_bars    => $last_index + 1,
     };
 
     return {
@@ -149,7 +201,19 @@ sub calculate {
     };
 }
 
-sub gaps { my ($self) = @_; return $self->{gaps} || []; }
+sub _trim_history {
+    my ($active, $history_max) = @_;
+    $history_max = DEFAULT_FVG_HISTORY_MAX unless defined $history_max;
+    while (scalar(@$active) > $history_max + 1) {
+        my $oldest = shift @$active;
+        $oldest->{state}     = 'deleted';
+        $oldest->{filled}    = 1;
+        $oldest->{strength}  = 0;
+        $oldest->{extend_to} = $oldest->{mitig_at} // $oldest->{created_index};
+    }
+}
+
+sub gaps   { my ($self) = @_; return $self->{gaps}   || []; }
 sub active { my ($self) = @_; return $self->{active} || []; }
 
 1;

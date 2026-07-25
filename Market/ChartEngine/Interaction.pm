@@ -431,18 +431,47 @@ sub set_timeframe {
     if ($self->{timeframe_manager} && $self->{timeframe_manager}->can('set_active')) {
         $self->{timeframe_manager}->set_active($tf);
     }
-    $self->{indicator_manager}->rebuild_all($self->{market_data})
-        if $self->{indicator_manager};
 
-    # Cambio de timeframe = cambio del dataset activo: invalidar y reconstruir la
-    # cache de analisis (una sola vez) antes de renderizar.
-    $self->invalidate_analysis_cache();
+    # Rebuild de indicadores core (ATR, etc.). Los David Tools son lazy_tf y
+    # se omiten aqui; solo se recomputan si su overlay esta activo.
+    if ($self->{indicator_manager}) {
+        $self->{indicator_manager}->rebuild_all($self->{market_data});
+        $self->_recompute_active_david_indicators();
+    }
+
+    # Cambio de timeframe: reconstruir solo engines de overlays activos.
+    # No invalidate() global (reset de todos los engines): eso costaba segundos
+    # aunque los overlays estuvieran apagados.
+    $self->{analysis_cache} = undef;
+    if ($self->{engine_registry} && $self->{engine_registry}->can('clear_cache')) {
+        $self->{engine_registry}->clear_cache();
+    }
     $self->rebuild_analysis_cache();
 
     $self->_load_tf_viewport($tf);
     $self->_sync_infra_state();
     $self->render();
     $self->_replay_sync_controls();
+}
+
+# Recalcula solo los indicadores David cuyo overlay este habilitado.
+# Evita ~4-5s de LiquidityDavid/ZigZag en cada tecla 1-8 cuando David Tools
+# estan apagados (caso tipico).
+sub _recompute_active_david_indicators {
+    my ($self) = @_;
+    my $im = $self->{indicator_manager} or return;
+    my $om = $self->{overlay_manager};
+
+    my %map = (
+        zigzag_vp2_david  => 'zigzag_vp2_david',
+        zigzag_mtf2_david => 'zigzag_mtf2_david',
+        fibonacci_david   => 'fibonacci_david',
+        liquidity_david   => 'liquidity_david',
+    );
+    for my $key (keys %map) {
+        next unless $om && $om->can('is_enabled') && $om->is_enabled($key);
+        $im->rebuild_one($map{$key}, $self->{market_data}) if $im->can('rebuild_one');
+    }
 }
 
 sub reset_view {

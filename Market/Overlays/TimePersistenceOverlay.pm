@@ -1,0 +1,222 @@
+package Market::Overlays::TimePersistenceOverlay;
+
+use strict;
+use warnings;
+
+sub new {
+    my ($class, %args) = @_;
+    my $self = {
+        data     => undef,
+        canvas   => $args{canvas},
+        scale    => $args{scale},
+        elements => [],
+        %args,
+    };
+    bless $self, $class;
+    return $self;
+}
+
+sub set_data {
+    my ($self, $data) = @_;
+    $self->{data} = $data;
+    return $self;
+}
+
+sub draw {
+    my ($self, %args) = @_;
+    my $canvas = $args{canvas} || $self->{canvas};
+    my $scale  = $args{scale}  || $self->{scale};
+    my $data   = $args{data}   || $self->{data};
+    my $clip_y_top    = $args{clip_y_top};
+    my $clip_y_bottom = $args{clip_y_bottom};
+    return unless $canvas && $scale && $data && ref($data) eq 'HASH';
+
+    my $settings = $args{settings} || $self->{settings};
+    if ($settings && $settings->can('enabled')) {
+        return $self unless $settings->enabled('show_time_persistence');
+    }
+
+    $self->clear($canvas);
+
+    my $distribution = $data->{distribution} || {};
+    my $bins_ref     = $distribution->{sorted_bins} || [];
+    return $self unless ref($bins_ref) eq 'ARRAY' && @$bins_ref;
+
+    my $width      = $scale->{width} || 800;
+    my $strip_w    = $scale->{y_axis_strip_w} || 66;
+    my $chart_width = $width - $strip_w - 8;
+    my $bar_region_width = int($chart_width * 0.18);
+    $bar_region_width = 20 if $bar_region_width < 20;
+    $bar_region_width = 180 if $bar_region_width > 180;
+    my $x_right = $chart_width;
+    my $x_left  = $x_right - $bar_region_width;
+
+    my $max_time = 0;
+    for my $bin (@$bins_ref) {
+        my $vol = $bin->{volume} || 0;
+        $max_time = $vol if $vol > $max_time;
+    }
+    return $self unless $max_time > 0;
+
+    my $max_bar_w  = $chart_width * 0.22;
+    return $self if $max_bar_w <= 1;
+
+    my $bin_size = $data->{metadata}{bin_size} || 0.01;
+    my $poc = $data->{poc} || {};
+    my $poc_price = $poc->{price};
+    my $poc_bin_coords = undef;
+    my $poc_price_y = undef;
+
+    for my $bin (@$bins_ref) {
+        next unless $bin && ref($bin) eq 'HASH';
+        my $price = $bin->{price};
+        my $vol   = $bin->{volume} || 0;
+        next unless defined $price;
+        next if $vol <= 0;
+
+        my $price_lo = $price - $bin_size / 2;
+        my $price_hi = $price + $bin_size / 2;
+
+        my $y1 = $scale->value_to_y($price_hi);
+        my $y2 = $scale->value_to_y($price_lo);
+        next unless defined $y1 && defined $y2;
+        ($y1, $y2) = ($y2, $y1) if $y1 > $y2;
+        next unless _y_in_clip($y1, $clip_y_top, $clip_y_bottom) || _y_in_clip($y2, $clip_y_top, $clip_y_bottom);
+
+        my $bar_len = ($vol / $max_time) * $max_bar_w;
+        next if $bar_len <= 0;
+
+        my $x3 = $width;
+        my $x1 = $x3 - $bar_len;
+
+        my $is_poc = (defined $poc_price && abs($price - $poc_price) < 1e-6);
+        if ($is_poc) {
+            $poc_bin_coords = { x1 => $x1, x2 => $x3, y1 => $y1, y2 => $y2 };
+            $poc_price_y = ($y1 + $y2) / 2;
+        }
+
+        $canvas->createRectangle($x1, $y1, $x3, $y2,
+            -fill => '#9c27b0', -outline => '#9c27b0', -width => 0, -tags => ['overlay_time_persistence']);
+    }
+
+    if ($poc_bin_coords) {
+        $canvas->createRectangle($poc_bin_coords->{x1}, $poc_bin_coords->{y1}, $poc_bin_coords->{x2}, $poc_bin_coords->{y2},
+            -fill => '', -outline => '#e040fb', -width => 2, -tags => ['overlay_time_persistence']);
+    }
+
+    if (defined $poc_price_y && _y_in_clip($poc_price_y, $clip_y_top, $clip_y_bottom)) {
+        $canvas->createLine($x_left, $poc_price_y, $width, $poc_price_y,
+            -fill   => '#e040fb',
+            -width  => 2,
+            -dash   => [4, 4],
+            -tags   => ['overlay_time_persistence'],
+        );
+        $canvas->createText($width - 4, $poc_price_y - 6,
+            -text   => 'TPOC',
+            -anchor => 'e',
+            -fill   => '#e040fb',
+            -font   => 'Helvetica 8 bold',
+            -tags   => ['overlay_time_persistence'],
+        );
+    }
+
+    my $val = $data->{value_area}{val};
+    my $vah = $data->{value_area}{vah};
+    if (defined $val && defined $vah) {
+        for my $entry (
+            ['TVAL', $val->{price}],
+            ['TVAH', $vah->{price}]
+        ) {
+            my ($text, $price) = @$entry;
+            my $y = $scale->value_to_y($price);
+            next unless defined $y;
+            next unless _y_in_clip($y, $clip_y_top, $clip_y_bottom);
+            my $line_color = '#ce93d8';
+            $canvas->createLine($x_left, $y, $x_right, $y,
+                -fill   => $line_color,
+                -width  => 1,
+                -dash   => [2, 4],
+                -tags   => ['overlay_time_persistence'],
+            );
+            $canvas->createText($x_left - 4, $y,
+                -text   => $text,
+                -anchor => 'e',
+                -fill   => $line_color,
+                -font   => 'Helvetica 7',
+                -tags   => ['overlay_time_persistence'],
+            );
+        }
+    }
+
+    my $nodes = $data->{nodes} || {};
+    if (ref $nodes->{hvn} eq 'ARRAY') {
+        for my $node (@{ $nodes->{hvn} }) {
+            next unless $node && ref $node eq 'HASH' && defined $node->{price};
+            my $y = $scale->value_to_y($node->{price});
+            next unless defined $y && _y_in_clip($y, $clip_y_top, $clip_y_bottom);
+            $canvas->createLine($x_left, $y, $x_right, $y,
+                -fill  => '#ba68c8',
+                -width => 1,
+                -dash  => [1, 3],
+                -tags  => ['overlay_time_persistence'],
+            );
+            $canvas->createText($x_left + 2, $y - 6,
+                -text   => 'HTN',
+                -anchor => 'nw',
+                -fill   => '#ba68c8',
+                -font   => 'Helvetica 7',
+                -tags   => ['overlay_time_persistence'],
+            );
+        }
+    }
+    if (ref $nodes->{lvn} eq 'ARRAY') {
+        for my $node (@{ $nodes->{lvn} }) {
+            next unless $node && ref $node eq 'HASH' && defined $node->{price};
+            my $y = $scale->value_to_y($node->{price});
+            next unless defined $y && _y_in_clip($y, $clip_y_top, $clip_y_bottom);
+            $canvas->createLine($x_left, $y, $x_right, $y,
+                -fill  => '#9e9e9e',
+                -width => 1,
+                -dash  => [1, 5],
+                -tags  => ['overlay_time_persistence'],
+            );
+            $canvas->createText($x_left + 2, $y + 6,
+                -text   => 'LTN',
+                -anchor => 'nw',
+                -fill   => '#9e9e9e',
+                -font   => 'Helvetica 7',
+                -tags   => ['overlay_time_persistence'],
+            );
+        }
+    }
+
+    my $summary = sprintf('TPO PROFILE (%s bins)', scalar(@$bins_ref));
+    $canvas->createText($x_left + 4, 12,
+        -text   => $summary,
+        -anchor => 'nw',
+        -fill   => '#ffffff',
+        -font   => 'Helvetica 8',
+        -tags   => ['overlay_time_persistence'],
+    );
+
+    return $self;
+}
+
+sub _y_in_clip {
+    my ($y, $top, $bottom) = @_;
+    return 1 unless defined $y;
+    return 0 if defined $top    && $y < $top - 4;
+    return 0 if defined $bottom && $y > $bottom + 2;
+    return 1;
+}
+
+sub clear {
+    my ($self, $canvas) = @_;
+    $canvas ||= $self->{canvas};
+    return unless $canvas && $canvas->can('delete');
+    $canvas->delete('overlay_time_persistence');
+    $self->{elements} = [];
+    return $self;
+}
+
+1;

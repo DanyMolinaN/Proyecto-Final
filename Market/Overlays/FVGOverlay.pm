@@ -1,17 +1,27 @@
 package Market::Overlays::FVGOverlay;
 
+# =============================================================================
+# Market::Overlays::FVGOverlay
+#
+# Dibuja Fair Value Gaps segun la logica de Proyecto_David (SMC_Structures2):
+#   - state 'active'    → color vivo (bull teal / bear red)
+#   - state 'mitigated' → gris (mitigacion parcial; sigue vivo)
+#   - state 'deleted' / filled=1 → no se dibuja
+#
+# Sin fade por edad (max_age): solo se ocultan los borrados totalmente.
+# =============================================================================
+
 use strict;
 use warnings;
 
 sub new {
     my ($class, %args) = @_;
     my $self = {
-        data => undef,
-        canvas => $args{canvas},
-        scale => $args{scale},
+        data     => undef,
+        canvas   => $args{canvas},
+        scale    => $args{scale},
         settings => $args{settings},
         elements => [],
-        min_strength => 0.08,
         %args,
     };
     bless $self, $class;
@@ -41,46 +51,42 @@ sub draw {
         && $self->{settings}->can('enabled')
         && !$self->{settings}->enabled('show_fvg');
 
-    my $gaps = $data->{gaps} || [];
-    return $self unless ref($gaps) eq 'ARRAY';
-
-    my $max_age = 50;
-    if ($data->{metadata} && defined $data->{metadata}{max_age_bars}) {
-        $max_age = $data->{metadata}{max_age_bars};
+    # Preferir active (vivos); si no hay, filtrar gaps no-deleted
+    my $gaps = $data->{active};
+    if (!$gaps || ref($gaps) ne 'ARRAY' || !@$gaps) {
+        $gaps = [ grep {
+            $_ && ref $_ eq 'HASH'
+            && !$_->{filled}
+            && ($_->{state} // 'active') ne 'deleted'
+        } @{ $data->{gaps} || [] } ];
     }
-    $max_age = 50 if !$max_age || $max_age <= 0;
-
-    my $ref_idx = defined $end_idx ? $end_idx : undef;
-    my $min_strength = $self->{min_strength} // 0.08;
+    return $self unless ref($gaps) eq 'ARRAY';
 
     my $total_received = scalar(@$gaps);
     my $discarded_invalid = 0;
     my $discarded_viewport = 0;
-    my $discarded_faded = 0;
     my $rendered = 0;
     my $max_render = 60;
 
-    my @draw_gaps;
-    for my $gap (@$gaps) {
-        next unless $gap && ref($gap) eq 'HASH';
-        my $ci = $gap->{created_index} // $gap->{index};
-        next unless defined $ci;
-        if (defined $end_idx && $ci > $end_idx)   { next; }
-        if (defined $start_idx && ($gap->{extend_to} // $ci) < $start_idx) { next; }
-        push @draw_gaps, $gap;
-    }
+    my @draw_gaps = grep {
+        my $g = $_;
+        $g && ref($g) eq 'HASH'
+            && !($g->{filled})
+            && (($g->{state} // 'active') ne 'deleted')
+    } @$gaps;
+
     @draw_gaps = sort {
-        ($b->{created_index} // 0) <=> ($a->{created_index} // 0)
+        ($b->{created_index} // $b->{index} // 0)
+            <=> ($a->{created_index} // $a->{index} // 0)
     } @draw_gaps;
 
     my $cw = $scale->index_to_center_x(1) - $scale->index_to_center_x(0);
     my $half = $cw > 0 ? $cw / 2 : 2;
 
     for my $gap (@draw_gaps) {
-        next unless $gap && ref($gap) eq 'HASH';
-        my $ci   = $gap->{created_index} // $gap->{index};
-        my $ei   = $gap->{extend_to}     // $ci;
-        my $type = $gap->{type};
+        my $ci   = $gap->{created_index} // $gap->{index} // $gap->{idx_start};
+        my $ei   = $gap->{extend_to}     // (defined $end_idx ? $end_idx : $ci);
+        my $type = $gap->{type} // (($gap->{dir} // '') eq 'bear' ? 'bearish' : 'bullish');
         my $top    = $gap->{top};
         my $bottom = $gap->{bottom};
         unless (defined $ci && defined $type && defined $top && defined $bottom) {
@@ -91,26 +97,20 @@ sub draw {
         if (defined $end_idx && $ci > $end_idx)   { $discarded_viewport++; next; }
         if (defined $start_idx && $ei < $start_idx) { $discarded_viewport++; next; }
 
-        my $age = defined $ref_idx ? ($ref_idx - $ci) : ($gap->{age} // 0);
-        $age = 0 if $age < 0;
-        my $strength = 1 - ($age / $max_age);
-        $strength = 0 if $strength < 0;
-        $strength = 1 if $strength > 1;
-        if ($gap->{filled}) {
-            $strength *= defined $gap->{strength} && $gap->{strength} < 1 ? $gap->{strength} : 0.35;
-        }
-        if ($strength < $min_strength) {
-            $discarded_faded++;
-            next;
-        }
+        my $state = $gap->{state} // 'active';
+        my $is_mitigated = ($state eq 'mitigated');
 
-        my $base = $type eq 'bearish' ? [0xef, 0x53, 0x50]
-                 :                        [0x26, 0xa6, 0x9a];
-        my $fill = _fade_hex($base, $strength);
-
-        my $stip = $strength >= 0.66 ? 'gray50'
-                 : $strength >= 0.40 ? 'gray25'
-                 :                      'gray12';
+        # Colores: activo = teal/rojo; mitigado parcial = gris (como David)
+        my ($fill, $stip);
+        if ($is_mitigated) {
+            $fill = '#6b7280';
+            $stip = 'gray25';
+        }
+        else {
+            my $base = $type eq 'bearish' ? [0xef, 0x53, 0x50] : [0x26, 0xa6, 0x9a];
+            $fill = sprintf('#%02x%02x%02x', @$base);
+            $stip = 'gray50';
+        }
 
         my $x1 = $scale->index_to_center_x($ci) - $half;
         my $draw_end = $ei;
@@ -133,18 +133,18 @@ sub draw {
             -tags    => ['overlay_fvg'],
         );
 
-        if ($strength > 0.15) {
-            my $label = $type eq 'bullish' ? 'FVG+' : 'FVG-';
-            my $lx = $scale->index_to_center_x($ci) + 2;
-            my $ly = ($y1 + $y2) / 2;
-            $canvas->createText($lx, $ly,
-                -text   => $label,
-                -anchor => 'w',
-                -fill   => $fill,
-                -font   => 'Helvetica 7 bold',
-                -tags   => ['overlay_fvg'],
-            );
-        }
+        my $label = $type eq 'bullish' ? 'FVG+' : 'FVG-';
+        $label .= ' m' if $is_mitigated;
+        my $lx = $scale->index_to_center_x($ci) + 2;
+        my $ly = ($y1 + $y2) / 2;
+        $canvas->createText($lx, $ly,
+            -text   => $label,
+            -anchor => 'w',
+            -fill   => $fill,
+            -font   => 'Helvetica 7 bold',
+            -tags   => ['overlay_fvg'],
+        );
+
         $rendered++;
         last if $rendered >= $max_render;
     }
@@ -152,24 +152,11 @@ sub draw {
     $self->{smc_audit} = {
         total_received        => $total_received,
         discarded_by_viewport => $discarded_viewport,
-        discarded_faded       => $discarded_faded,
         discarded_invalid     => $discarded_invalid,
         rendered              => $rendered,
     };
 
     return $self;
-}
-
-sub _fade_hex {
-    my ($rgb, $s) = @_;
-    $s = 0 if !defined $s || $s < 0;
-    $s = 1 if $s > 1;
-    my @bg = (0x13, 0x17, 0x22);
-    my @o;
-    for my $k (0 .. 2) {
-        push @o, int($rgb->[$k] * $s + $bg[$k] * (1 - $s));
-    }
-    return sprintf('#%02x%02x%02x', @o);
 }
 
 sub clear {

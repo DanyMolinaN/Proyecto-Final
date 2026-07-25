@@ -62,16 +62,22 @@ sub draw {
         my $res_p1 = $channel->{resistance}{pivot1};
         my $sup_end = $channel->{support}{end_index};
         
-        # Extender visualmente hasta el final de los datos o invalidated_at
+        # Preferir fin en pivot2 (extremo B) cuando existe — canal David.
+        my $sup_p2 = $channel->{support}{pivot2};
+        my $res_p2 = $channel->{resistance}{pivot2};
         my $draw_end_idx = $sup_end;
         if ($state eq 'invalidated' && defined $channel->{invalidated_at}) {
             $draw_end_idx = $channel->{invalidated_at};
+        }
+        # Si hay pivot2, el canal termina ahi (no proyectar mas alla).
+        if ($sup_p2 && defined $sup_p2->{index}) {
+            $draw_end_idx = $sup_p2->{index};
         }
         
         next if defined $draw_end_idx && defined $start_idx && $draw_end_idx < $start_idx;
         next if defined $end_idx && $sup_p1->{index} > $end_idx;
         
-        my $color = '#787b86'; # horizontal
+        my $color = '#ff9800'; # naranja David
         if ($type eq 'ascending') {
             $color = '#22ab94';
         } elsif ($type eq 'descending') {

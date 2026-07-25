@@ -44,9 +44,9 @@ sub _replay_warn {
 sub _replay_debug_log {
     my ($self, $action) = @_;
     my $rc = $self->{replay_controller};
-    my $current = ($self->{market_data} && $self->{market_data}->can('last_index')) ? $self->{market_data}->last_index() : 'undef';
-    my $playing = ($rc && $rc->is_playing()) ? 1 : 0;
-    my $enabled = ($rc && $rc->is_active()) ? 1 : 0;
+    my $current = ($rc && defined $rc->{current_index}) ? $rc->{current_index} : 'undef';
+    my $playing = ($rc && $rc->{playing}) ? 1 : 0;
+    my $enabled = ($rc && $rc->{enabled}) ? 1 : 0;
     warn "[Replay][$action] current_index=$current playing=$playing enabled=$enabled\n";
 }
 
@@ -75,42 +75,151 @@ sub _replay_run_handler {
     return $self;
 }
 
+# _replay_raw_total() -> N velas reales (ignora frontera de replay)
+sub _replay_raw_total {
+    my ($self) = @_;
+    my $md = $self->{market_data} or return 0;
+    if ($md->can('raw_last_index')) {
+        my $idx = $md->raw_last_index();
+        return (defined $idx && $idx >= 0) ? ($idx + 1) : 0;
+    }
+    return $md->size() || 0;
+}
+
+# Alinea MarketData::set_replay_boundary con el puntero del ReplayController
+# (mismo modelo que Proyecto_David) para que size()/last_candle() no filtren
+# el futuro y los indicadores David avancen bien.
+sub _replay_sync_market_boundary {
+    my ($self) = @_;
+    my $md = $self->{market_data} or return;
+    my $rc = $self->{replay_controller};
+
+    if ($rc && $rc->is_active()) {
+        my $idx = $rc->{current_index} // 0;
+        my $c = $md->can('raw_get_candle')
+            ? $md->raw_get_candle($idx)
+            : undef;
+        if (!$c && $md->can('get_candle')) {
+            # Sin frontera aun: get_candle ve todo
+            $c = $md->get_candle($idx);
+        }
+        my $ts = $c ? ($c->{timestamp} // $c->{ts}) : undef;
+        if (defined $ts && $md->can('set_replay_boundary')) {
+            $md->set_replay_boundary($ts);
+        }
+    }
+    elsif ($md->can('clear_replay_boundary')) {
+        $md->clear_replay_boundary();
+    }
+    return $self;
+}
+
 # _refresh_structure_zigzag()
-# Actualiza ZigZag incrementalmente (sin Liquidity/FVG). Solo se invoca cuando
-# avanza el puntero de replay o al salir de replay — nunca en pan/zoom/render.
+# Recalcula engines visibles (SMC/FVG/OB/TLC/...) y avanza David Tools activos.
 sub _refresh_structure_zigzag {
     my ($self) = @_;
-    return unless $self->{smc_structure_engine} && $self->{market_data};
+    return unless $self->{market_data};
 
-    my %args = (
-        replay_controller => $self->{replay_controller},
-        timeframe         => $self->{active_tf} || $self->{market_data}->active_tf(),
-    );
+    $self->_replay_sync_market_boundary();
 
-    my $smc_structure_data = $self->{smc_structure_engine}->calculate(
-        $self->{market_data}, %args,
-    );
-    if ( $self->{analysis_cache} && $smc_structure_data && ref $smc_structure_data eq 'HASH' ) {
-        $self->{analysis_cache}{smc_structure} = $smc_structure_data;
-        $self->{analysis_cache}{structure} = $self->_legacy_structure_view_from_smc($smc_structure_data);
-        if ($self->{analysis_cache}{liquidity}) {
-            $self->{analysis_cache}{liquidity}{eq_levels}
-                = $self->_eq_levels_from_smc_structure($smc_structure_data);
+    my $s = $self->{overlay_settings};
+    my $on = sub {
+        my ($k) = @_;
+        return (!$s || !$s->can('enabled')) ? 1 : ($s->enabled($k) ? 1 : 0);
+    };
+
+    my $need_core =
+           !$s
+        || $on->('show_swing_high') || $on->('show_swing_low')
+        || $on->('show_hh') || $on->('show_hl') || $on->('show_lh') || $on->('show_ll')
+        || $on->('show_bos_external') || $on->('show_bos_internal')
+        || $on->('show_choch_external') || $on->('show_choch_internal')
+        || $on->('show_internal_zigzag') || $on->('show_external_zigzag')
+        || $on->('show_internal_swings') || $on->('show_external_swings')
+        || $on->('show_eqh') || $on->('show_eql')
+        || $on->('show_fvg')
+        || $on->('show_ob_external') || $on->('show_ob_internal') || $on->('show_orderblocks')
+        || $on->('show_trend_channel')
+        || $on->('show_liquidity_levels') || $on->('show_fibonacci')
+        || $on->('show_zzmtf_internal') || $on->('show_zzmtf_external');
+
+    my @only;
+    if ($need_core) {
+        push @only, 'smc_structure';
+        push @only, 'fvg'           if !$s || $on->('show_fvg');
+        push @only, 'orderblock'    if !$s || $on->('show_ob_external') || $on->('show_ob_internal')
+            || $on->('show_orderblocks') || $on->('show_trend_channel');
+        push @only, 'trend_channel' if !$s || $on->('show_trend_channel');
+        push @only, 'liquidity'     if $on->('show_eqh') || $on->('show_eql')
+            || $on->('show_liquidity_levels') || $on->('show_sweeps')
+            || $on->('show_grabs') || $on->('show_runs');
+        push @only, 'fibonacci'     if $on->('show_fibonacci');
+        push @only, 'zzmtf_overlay' if $on->('show_zzmtf_internal') || $on->('show_zzmtf_external');
+    }
+
+    if (@only && $self->can('rebuild_analysis_cache')) {
+        $self->rebuild_analysis_cache(
+            only       => \@only,
+            keep_cache => 1,
+        );
+    }
+
+    $self->_refresh_david_indicators_for_replay();
+
+    return $self->{analysis_cache} ? $self->{analysis_cache}{smc_structure} : undef;
+}
+
+# Avanza indicadores David: update_last si el puntero avanzo 1 vela;
+# rebuild_one si seek/atras/entrada (como David rebuild_range).
+# Nunca usa velas > frontera de replay (MarketData::size ya recortado).
+sub _refresh_david_indicators_for_replay {
+    my ($self) = @_;
+    my $im = $self->{indicator_manager} or return;
+    my $om = $self->{overlay_manager} or return;
+    my $md = $self->{market_data} or return;
+    my $rc = $self->{replay_controller};
+
+    my @keys = qw(zigzag_vp2_david zigzag_mtf2_david fibonacci_david liquidity_david);
+    my @active = grep {
+        $om->can('is_enabled') && $om->is_enabled($_)
+    } @keys;
+    return unless @active;
+
+    my $cur  = ($rc && $rc->is_active()) ? ($rc->{current_index} // 0) : undef;
+    my $prev = $self->{_david_replay_built_to};
+    my $size = $md->size // 0;
+
+    my $forward_one = defined $cur && defined $prev && $cur == $prev + 1;
+
+    # Si el buffer interno supera el size visible, hay datos del futuro → rebuild
+    my $has_future = 0;
+    for my $key (@active) {
+        my $ind = $im->get($key) or next;
+        my $buf = $ind->{_c} || [];
+        if (@$buf > $size) {
+            $has_future = 1;
+            last;
         }
     }
 
-    if ($self->{engine_registry}) {
-        my $zzmtf_eng = $self->{engine_registry}->get('zzmtf_overlay');
-        if ($zzmtf_eng) {
-            my $view_end = $self->{replay_controller} && $self->{replay_controller}->is_active() ? $self->{replay_controller}->{current_index} : undef;
-            my $zzmtf_data = $zzmtf_eng->calculate($self->{market_data}, %args, view_end => $view_end, overlay_settings => $self->{overlay_settings});
-            if ($self->{analysis_cache} && $zzmtf_data) {
-                $self->{analysis_cache}{zzmtf_overlay} = $zzmtf_data;
-            }
+    if ($forward_one && !$has_future) {
+        for my $key (@active) {
+            my $ind = $im->get($key);
+            next unless $ind && $ind->can('update_last');
+            # Defensa: no avanzar si ya estamos al tamaño del market recortado
+            my $buf = $ind->{_c} || [];
+            next if @$buf >= $size;
+            $ind->update_last($md);
+        }
+    }
+    else {
+        for my $key (@active) {
+            $im->rebuild_one($key, $md) if $im->can('rebuild_one');
         }
     }
 
-    return $smc_structure_data;
+    $self->{_david_replay_built_to} = $cur;
+    return $self;
 }
 
 sub _replay_apply {
@@ -166,22 +275,19 @@ sub _replay_sync_speed_buttons {
 sub _replay_start_at_index {
     my ($self, $idx, $autoplay) = @_;
     return unless $self->{market_data} && $self->{replay_controller};
-    my $total = $self->{market_data}->raw_last_index() + 1;
+    my $total = $self->_replay_raw_total();
     return unless $total > 0;
-    
     $idx = 0 unless defined $idx;
     $idx = 0 if $idx < 0;
     $idx = $total - 1 if $idx >= $total;
 
-    my $candle = $self->{market_data}->raw_get_candle($idx);
-    return unless $candle;
-
     $self->_cancel_replay_timer();
-    $self->{replay_controller}->start($candle->{timestamp});
+    $self->{_david_replay_built_to} = undef;  # fuerza rebuild al entrar
+    $self->{replay_controller}->enter_replay($idx, $total);
     $self->{_replay_select_mode} = 0;
-    
     if ($autoplay && $idx < $total - 1) {
         $self->{replay_controller}->play();
+        $self->_replay_schedule_tick();
     }
     $self->_replay_apply();
     return $self;
@@ -212,7 +318,7 @@ sub _replay_enter {
     my ($self) = @_;
     return $self->_replay_run_handler('enter', sub {
         return unless $self->{market_data} && $self->{replay_controller};
-        my $total = $self->{market_data}->raw_last_index() + 1;
+        my $total = $self->_replay_raw_total();
         return unless $total > 0;
 
         my $idx = $self->{crosshair_idx};
@@ -234,7 +340,14 @@ sub _replay_exit {
         eval { $self->{canvas}->configure(-cursor => '') } if $self->{canvas};
         $self->_cancel_replay_timer();
         $self->{replay_controller}->exit_replay();
-        $self->_refresh_structure_zigzag();
+        $self->{_david_replay_built_to} = undef;
+        if ($self->{market_data} && $self->{market_data}->can('clear_replay_boundary')) {
+            $self->{market_data}->clear_replay_boundary();
+        }
+        # Salida: reconstruir analisis completo de overlays activos + David
+        $self->invalidate_analysis_cache() if $self->can('invalidate_analysis_cache');
+        $self->rebuild_analysis_cache() if $self->can('rebuild_analysis_cache');
+        $self->_recompute_active_david_indicators() if $self->can('_recompute_active_david_indicators');
         $self->render();
     });
 }
@@ -245,75 +358,83 @@ sub _replay_toggle_play {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
-        if ($rc->is_playing()) {
+        if ($rc->{playing}) {
             $rc->pause();
             $self->_cancel_replay_timer();
             $self->render();
             return;
         }
 
-        my $total = $self->{market_data}->raw_last_index() + 1;
+        my $total = $self->_replay_raw_total();
         return unless $total > 0;
-        my $current = $self->{market_data}->last_index();
-        return if $current >= $total - 1;
+        return if $rc->{current_index} >= $total - 1;
 
         $rc->play();
         $self->_replay_apply();
+        $self->_replay_schedule_tick();
     });
 }
 
+# _replay_set_speed($speed)
+# Cambia el multiplicador de reproduccion (0.25x .. 10x, estilo TradingView).
+# El siguiente tick programado en _replay_schedule_tick ya lee {speed} en vivo,
+# asi que el cambio se aplica de inmediato sin reiniciar el timer.
 sub _replay_set_speed {
     my ($self, $speed) = @_;
     return $self->_replay_run_handler('set_speed', sub {
         return unless $self->{replay_controller};
         $self->{_replay_speed_var} = $speed;
-        $self->{replay_controller}->set_speed($speed) if $self->{replay_controller}->can('set_speed');
+        $self->{replay_controller}->set_speed($speed);
         $self->_replay_sync_speed_buttons();
         $self->render();
     });
 }
 
+# _replay_seek_scale_changed($value)
+# Callback del slider de recorrido: permite saltar directo a cualquier vela
+# del historico (scrubbing), igual que la barra de Replay de TradingView.
+# Al arrastrar, se pausa automaticamente (si estaba en play) para no pelear
+# con el timer de auto-avance.
 sub _replay_seek_scale_changed {
     my ($self, $val) = @_;
     return if $self->{_replay_scale_updating};
     return $self->_replay_run_handler('seek', sub {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active() && $self->{market_data};
-        my $total = $self->{market_data}->raw_last_index() + 1;
+        my $total = $self->_replay_raw_total();
         return unless $total > 0;
 
         my $target = int($val + 0.5);
         $target = 0 if $target < 0;
         $target = $total - 1 if $target >= $total;
-        
-        my $current = $self->{market_data}->last_index();
-        return if defined $current && $target == $current;
+        return if defined $rc->{current_index} && $target == $rc->{current_index};
 
         $rc->pause();
         $self->_cancel_replay_timer();
-        
-        my $candle = $self->{market_data}->raw_get_candle($target);
-        if ($candle) {
-            $rc->start($candle->{timestamp});
-        }
+        $self->{_david_replay_built_to} = undef;  # seek: rebuild
+        $rc->seek($target, $total);
         $self->_replay_apply();
     });
 }
 
+# _replay_sync_controls()
+# Refleja el estado actual del ReplayController en el slider de recorrido:
+# rango habilitado/deshabilitado segun si el replay esta activo, y posicion
+# actualizada en cada tick/step/seek. Usa un flag de guarda para no disparar
+# _replay_seek_scale_changed de vuelta cuando el valor se fija programaticamente.
 sub _replay_sync_controls {
     my ($self) = @_;
     my $scale = $self->{_replay_scale};
     return unless $scale;
 
     my $rc    = $self->{replay_controller};
-    my $total = $self->{market_data} ? ($self->{market_data}->raw_last_index() + 1) : 0;
+    my $total = $self->_replay_raw_total();
 
     if ($rc && $rc->is_active() && $total > 0) {
         $scale->configure(-state => 'normal', -from => 0, -to => $total - 1);
         $self->{_replay_scale_updating} = 1;
         local $@;
-        my $current = $self->{market_data}->last_index() // 0;
-        eval { $scale->set($current); };
+        eval { $scale->set($rc->{current_index} // 0); };
         $self->{_replay_scale_updating} = 0;
     }
     else {
@@ -333,9 +454,10 @@ sub _replay_step_forward {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
+        my $total = $self->_replay_raw_total();
         $rc->pause();
         $self->_cancel_replay_timer();
-        $rc->step_forward();
+        $rc->step_forward($total);
         $self->_replay_apply();
     });
 }
@@ -348,6 +470,7 @@ sub _replay_step_backward {
 
         $rc->pause();
         $self->_cancel_replay_timer();
+        $self->{_david_replay_built_to} = undef;  # atras: rebuild
         $rc->step_backward();
         $self->_replay_apply();
     });
@@ -359,17 +482,58 @@ sub _replay_fast_forward {
         my $rc = $self->{replay_controller};
         return unless $rc && $rc->is_active();
 
+        my $total = $self->_replay_raw_total();
         $rc->pause();
         $self->_cancel_replay_timer();
-        $rc->fast_forward();
+        # Salto >1: no update_last secuencial — rebuild
+        $self->{_david_replay_built_to} = undef;
+        $rc->fast_forward(10, $total);
         $self->_replay_apply();
     });
 }
 
 sub _replay_schedule_tick {
     my ($self) = @_;
-    # Deprecated: Market::Replay uses its own loop via the 'schedule' callback.
-    return $self;
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->{playing} && $self->{canvas};
+    $self->_cancel_replay_timer();
+
+    my $total = $self->_replay_raw_total();
+    if ($total <= 0 || $rc->{current_index} >= $total - 1) {
+        $rc->stop();
+        local $@;
+        my $ok = eval {
+            $self->render();
+            1;
+        };
+        $self->_replay_warn('schedule_tick/render_stop', $@) unless $ok;
+        $self->_replay_safe_sync_controls('schedule_tick/render_stop');
+        $self->_replay_debug_log('schedule_tick/render_stop');
+        return;
+    }
+
+    my $speed = $rc->{speed} || 1;
+    my $delay = int(400 / $speed);
+    $delay = 16 if $delay < 16;
+
+    $self->{_replay_after} = $self->{canvas}->after($delay, sub {
+        $self->{_replay_after} = undef;
+        $self->_replay_run_handler('tick', sub {
+            my $r = $self->{replay_controller};
+            return unless $r && $r->{playing};
+
+            my $n = $self->_replay_raw_total();
+            if ($n <= 0 || $r->{current_index} >= $n - 1) {
+                $r->stop();
+                $self->render();
+                return;
+            }
+
+            $r->step_forward($n);
+            $self->_replay_apply();
+            $self->_replay_schedule_tick();
+        });
+    });
 }
 
 # ── Redimensionado ────────────────────────────────────────────────────────────

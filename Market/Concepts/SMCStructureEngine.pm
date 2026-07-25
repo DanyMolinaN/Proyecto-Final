@@ -158,11 +158,10 @@ sub calculate {
 
     my $atr = _compute_atr(\@candles, $last_index, 200);
 
-    # ── Req-3: HashMap para rastrear EQL/EQH abiertos en O(1) ────────────────
-    # Clave: "EQH|$level" o "EQL|$level" (redondeado a 6 decimales).
-    # Valor: referencia al hashref del evento (para actualizar end_index in-place).
-    my %open_eq;   # $key => \@list_of_event_refs
-
+    # Orden alineado con David SMC_Structures2 / Pine:
+    # getCurrentStructure(swing) → getCurrentStructure(internal) →
+    # getCurrentStructure(equalHL) → displayStructure(swing/internal).
+    # EQH/EQL: linea pivote→pivote (sin proyeccion hasta BOS).
     for my $i (0 .. $last_index) {
         next unless $candles[$i];
 
@@ -184,23 +183,21 @@ sub calculate {
             store_l   => $self->{internal_lows},
         );
 
-        # 3. EQH / EQL (detecta nuevos eventos y los registra en %open_eq)
+        # 3. EQH / EQL (pivote a pivote, como David equalHL)
         $self->_update_equal_hl(\@candles, $i, $eq_len,
             high_ref  => \$self->{_eq_high},
             low_ref   => \$self->{_eq_low},
             prev_ref  => \$self->{_eq_prev_leg},
             atr       => $atr,
             threshold => $eq_thr,
-            open_eq   => \%open_eq,
         );
 
-        # 4. BOS/CHoCH Swing
+        # 4. BOS/CHoCH Swing (crossover/crossunder de close)
         $self->_check_structure_break(\@candles, $i,
             high_ref  => \$self->{_sw_high},
             low_ref   => \$self->{_sw_low},
             trend_ref => \$self->{_sw_trend},
             scope     => 'swing',
-            open_eq   => \%open_eq,
             bar_index => $i,
         );
 
@@ -210,17 +207,8 @@ sub calculate {
             low_ref   => \$self->{_in_low},
             trend_ref => \$self->{_in_trend},
             scope     => 'internal',
-            open_eq   => \%open_eq,
             bar_index => $i,
         );
-    }
-
-    # Req-3: Cerrar todos los EQL/EQH que quedaron abiertos → end_index = last_index
-    for my $evts (values %open_eq) {
-        for my $evt (@{ $evts || [] }) {
-            $evt->{end_index} = $last_index if !defined $evt->{end_index} || $evt->{end_index} < $last_index;
-            $evt->{is_open}   = 1;
-        }
     }
 
     my $sw_trend_str = _bias_str($self->{_sw_trend});

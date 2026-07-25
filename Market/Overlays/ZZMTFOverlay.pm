@@ -1,3 +1,4 @@
+# DEPRECATED — replaced by ZigZagMTF2DavidOverlay (David variant)
 package Market::Overlays::ZZMTFOverlay;
 
 use strict;

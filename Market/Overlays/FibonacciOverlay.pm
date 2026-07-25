@@ -1,3 +1,4 @@
+# DEPRECATED — replaced by FibonacciDavidOverlay (David variant)
 package Market::Overlays::FibonacciOverlay;
 
 use strict;

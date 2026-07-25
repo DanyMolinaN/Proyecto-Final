@@ -33,6 +33,7 @@ use Market::Indicators::ATR;
 use Market::Indicators::ZigZagMTF;
 use Market::Indicators::AnchoredVolumeProfile;
 use Market::Indicators::TrendChannel;
+use Market::Indicators::TrendLineChannel;
 use Market::Indicators::TrailingExtremes;
 
 # --- Engines de analisis (calculo por dataset completo) ---
@@ -41,6 +42,7 @@ use Market::Concepts::SMCStructureEngine;
 use Market::Concepts::FVGEngine;
 use Market::Concepts::OrderBlockEngine;
 use Market::Volume::VolumeProfileEngine;
+use Market::Volume::TimePersistenceEngine;
 
 use Market::Concepts::FibonacciEngine;
 use Market::Strategies::Indicators::SupplyDemand;
@@ -142,7 +144,9 @@ for my $tf (keys %mtf_resolutions) {
         resolution_minutes => $mtf_resolutions{$tf},
         period             => 2,
     );
-    $indicator_manager->register("zigzag_mtf_$tf", $zz);
+    # lazy_tf: el ZZ MTF vivo corre via EngineRegistry (zzmtf_overlay);
+    # no hace falta recalcular estos 5 indicadores en cada tecla 1-8.
+    $indicator_manager->register("zigzag_mtf_$tf", $zz, lazy_tf => 1);
 }
 
 # 4. ZigZag Volume Profile (mayor grado que zigzag_mtf).
@@ -151,10 +155,11 @@ my $anchored_vp = Market::Indicators::AnchoredVolumeProfile->new(
     pivot_length => 50,
     bin_atr_mult => 1.0,
 );
-$indicator_manager->register('anchored_vp', $anchored_vp);
+# lazy_tf: el perfil anclado vivo esta en EngineRegistry (volume_profile).
+$indicator_manager->register('anchored_vp', $anchored_vp, lazy_tf => 1);
 
-# 5. TrendChannel (usa swings del SMC; se recalcula via EngineRegistry).
-my $trend_channel_engine = Market::Indicators::TrendChannel->new();
+# 5. TrendLineChannel (logica David: ancla en OB + extremo opuesto + ATR).
+my $trend_channel_engine = Market::Indicators::TrendLineChannel->new(mode => 'auto');
 
 # 6. TrailingExtremes (usa datos del SMC; se recalcula via EngineRegistry).
 my $trailing_extremes_engine = Market::Indicators::TrailingExtremes->new();
@@ -195,7 +200,7 @@ $engine_registry->register('smc_structure', $smc_structure_engine);
 
 my $fvg_engine = Market::Concepts::FVGEngine->new();
 $engine_registry->register('fvg', $fvg_engine,
-    # calc personalizado: necesita el motor SMC, no solo sus datos
+    deps => ['smc_structure'],
     calc => sub {
         my ($eng, $market_data, $cache, %args) = @_;
         return $eng->calculate(
@@ -206,6 +211,7 @@ $engine_registry->register('fvg', $fvg_engine,
 
 my $orderblock_engine = Market::Concepts::OrderBlockEngine->new();
 $engine_registry->register('orderblock', $orderblock_engine,
+    deps => ['smc_structure'],
     calc => sub {
         my ($eng, $market_data, $cache, %args) = @_;
         return $eng->calculate(
@@ -216,6 +222,7 @@ $engine_registry->register('orderblock', $orderblock_engine,
 
 my $fibonacci_engine = Market::Concepts::FibonacciEngine->new();
 $engine_registry->register('fibonacci', $fibonacci_engine,
+    deps => ['smc_structure'],
     calc => sub {
         my ($eng, $market_data, $cache, %args) = @_;
         return $eng->calculate(
@@ -224,27 +231,16 @@ $engine_registry->register('fibonacci', $fibonacci_engine,
     },
 );
 
-# TrendChannel: extrae swings del SMC y normaliza formato
+# TrendLineChannel (David): ancla en Order Block activo + extremo opuesto
 $engine_registry->register('trend_channel', $trend_channel_engine,
+    deps => ['orderblock', 'smc_structure'],
     calc => sub {
         my ($eng, $market_data, $cache, %args) = @_;
-        my $smc_data = $cache->{smc_structure} || {};
-        my @raw_swings = (
-            @{ $smc_data->{swing_highs} || [] },
-            @{ $smc_data->{swing_lows}  || [] },
-        );
-        my @combined = map {
-            my $sw  = $_;
-            my $lbl = $sw->{label} // '';
-            {
-                index => $sw->{index},
-                price => $sw->{level},
-                type  => ($lbl eq 'HH' || $lbl eq 'LH') ? 'high' : 'low',
-                label => $lbl,
-            }
-        } grep { ref $_ eq 'HASH' && defined $_->{index} && defined $_->{level} } @raw_swings;
         return $eng->calculate(
-            $market_data, source_swings => \@combined, %args
+            $market_data,
+            orderblocks   => $cache->{orderblock} || {},
+            atr_indicator => $atr200_indicator,
+            %args,
         );
     },
 );
@@ -287,9 +283,12 @@ $engine_registry->register('volume_profile', $volume_profile_engine, calc => sub
     return $eng->get_profile(0.70);
 });
 
+my $time_persistence_engine = Market::Volume::TimePersistenceEngine->new();
+$engine_registry->register('time_persistence', $time_persistence_engine);
+
 use Market::Indicators::AnchoredVWAP;
 my $anchored_vwap_engine = Market::Indicators::AnchoredVWAP->new(
-    mode => 'manual'
+    mode => 'auto', pivot_length => 50
 );
 $engine_registry->register('anchored_vwap', $anchored_vwap_engine, calc => sub {
     my ($eng, $md, $cache, %args) = @_;
@@ -426,7 +425,18 @@ my $engine = Market::ChartEngine->new(
     width             => 1000,
     height            => 700,
     max_visible_bars  => 1500,
+    david_toolbar_parent => $mw,               # monta David Tools (ZZ/Fib/Liq)
 );
+
+# Tras crear ChartEngine, los indicadores David ya estan registrados:
+# forzar un recompute completo (el CSV ya se cargo antes de new()).
+if ($indicator_manager->can('get')) {
+    for my $key (qw(zigzag_vp2_david zigzag_mtf2_david fibonacci_david liquidity_david)) {
+        my $ind = $indicator_manager->get($key);
+        next unless $ind && $ind->can('recompute');
+        $ind->recompute($market);
+    }
+}
 
 # FIX: Se pasa $mw explicitamente para que bind_events() enlace los KeyPress
 # directamente en la MainWindow, garantizando que 'r', 'a', '1'-'8', replay,

@@ -27,20 +27,75 @@ sub new {
     return $self;
 }
 
-# register($name, $indicator)
-# Registra un indicador bajo un nombre. El orden de registro determina el
-# orden de calculo. Registrar siempre en orden de dependencias.
+# register($name, $indicator, %opts)
+# opts:
+#   lazy_tf => 1  — no se recalcula en rebuild_all salvo force=>1
+#                   (herramientas opcionales / David Tools desactivadas)
 sub register {
-    my ($self, $name, $indicator) = @_;
+    my ($self, $name, $indicator, %opts) = @_;
     return unless defined $name && $indicator;
 
-    # Si ya estaba registrado, actualiza el objeto pero mantiene la posicion.
     unless (exists $self->{indicators}{$name}) {
         push @{ $self->{_order} }, $name;
     }
     $self->{indicators}{$name} = $indicator;
+    $self->{_lazy_tf}{$name} = 1 if $opts{lazy_tf};
 }
 
+# rebuild_all($market_data, %opts)
+# opts:
+#   force => 1           — incluye indicadores lazy_tf
+#   only  => \@names     — solo estos nombres
+#   skip  => \@names     — excluye estos nombres
+#   include_lazy => 1    — alias de force para lazy_tf
+sub rebuild_all {
+    my ($self, $market_data, %opts) = @_;
+    return unless $market_data;
+
+    my %only = map { $_ => 1 } @{ $opts{only}  || [] };
+    my %skip = map { $_ => 1 } @{ $opts{skip}  || [] };
+    my $force_lazy = $opts{force} || $opts{include_lazy};
+
+    for my $name (@{ $self->{_order} }) {
+        next if %only && !$only{$name};
+        next if $skip{$name};
+        # Herramientas lazy (David): omitir en cambio de TF si no se fuerza
+        next if !$force_lazy && $self->{_lazy_tf}{$name};
+
+        my $indicator = $self->{indicators}{$name};
+        next unless $indicator;
+        $indicator->reset() if $indicator->can('reset');
+        if ($indicator->can('recompute')) {
+            $indicator->recompute($market_data);
+        }
+        elsif ($indicator->can('update_at_index')) {
+            # Fallback: ATR y similares sin recompute()
+            my $size = $market_data->size // 0;
+            for my $i (0 .. $size - 1) {
+                $indicator->update_at_index($market_data, $i);
+            }
+        }
+    }
+}
+
+# rebuild_one($name, $market_data) — recalcula un indicador concreto (lazy on-demand)
+sub rebuild_one {
+    my ($self, $name, $market_data) = @_;
+    return unless $market_data && defined $name;
+    my $indicator = $self->{indicators}{$name};
+    return unless $indicator;
+    $indicator->reset() if $indicator->can('reset');
+    if ($indicator->can('recompute')) {
+        $indicator->recompute($market_data);
+    }
+    elsif ($indicator->can('update_at_index')) {
+        my $size = $market_data->size // 0;
+        for my $i (0 .. $size - 1) {
+            $indicator->update_at_index($market_data, $i);
+        }
+    }
+    return $indicator;
+}
 # update_last($market_data)
 # Actualiza todos los indicadores con la ultima vela (calculo incremental).
 # Respeta el orden de registro para garantizar dependencias.
@@ -59,24 +114,6 @@ sub update_last {
 sub get {
     my ($self, $name) = @_;
     return $self->{indicators}{$name};
-}
-
-# rebuild_all($market_data)
-# Recalcula todos los indicadores sobre la temporalidad activa.
-# El orden de calculo es el orden de registro (ver nota en new()).
-# Siempre llama a reset() antes de recompute() para garantizar que no haya
-# datos residuales de la temporalidad anterior.
-sub rebuild_all {
-    my ($self, $market_data) = @_;
-    return unless $market_data;
-    for my $name (@{ $self->{_order} }) {
-        my $indicator = $self->{indicators}{$name};
-        next unless $indicator;
-        # Reset explicito garantizado antes de recompute: evita acumulacion
-        # de datos entre temporalidades si recompute() no hace su propio reset.
-        $indicator->reset()     if $indicator->can('reset');
-        $indicator->recompute($market_data) if $indicator->can('recompute');
-    }
 }
 
 # slice_array($name, $start, $end) -> \@values

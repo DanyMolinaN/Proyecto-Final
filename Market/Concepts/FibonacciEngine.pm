@@ -1,3 +1,4 @@
+# DEPRECATED — replaced by FibonacciDavid + FibonacciDavidOverlay (David variant)
 package Market::Concepts::FibonacciEngine;
 
 # =============================================================================

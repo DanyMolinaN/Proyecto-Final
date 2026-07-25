@@ -206,10 +206,21 @@ sub _bind_all_canvas {
     $canvas->Tk::bind('<Button-1>' => sub {
         my $x = $canvas->XEvent->x;
         my $y = $canvas->XEvent->y;
+
+        # --- David Tools: hook de Fibonacci manual (Fase 5) ---
+        # Si el overlay Fibonacci David esta en modo 'manual', rutear el click
+        # al anchor handler y consumirlo. No afecta ningun otro feature.
+        if ( $self->{david_toolbar} && $self->{david_toolbar}->is_fibonacci_manual_mode() ) {
+            my $index = $self->{price_scale}->x_to_index($x);
+            $self->{david_toolbar}->handle_fibonacci_click($index);
+            return Tk::break;
+        }
+
         if ($self->{_replay_select_mode}) {
             $self->_replay_pick_from_canvas($x, $y);
             return Tk::break;
         }
+
         if ($self->_in_price_y_axis_strip($x, $y)) {
             $self->{y_axis_zoom_drag}   = 1;
             $self->{y_axis_zoom_target} = 'price';

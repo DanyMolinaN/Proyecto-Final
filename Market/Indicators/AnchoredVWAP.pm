@@ -77,7 +77,11 @@ sub processed_last { return $#{ $_[0]->{_c} }; }
 sub set_mode {
     my ( $self, $mode ) = @_;
     return unless $mode eq 'auto' || $mode eq 'manual';
+    my $was_manual = ( $self->{mode} eq 'manual' );
     $self->{mode} = $mode;
+    if ( $mode eq 'auto' && $was_manual ) {
+        $self->reanchor_to_latest_pivot if $self->can('reanchor_to_latest_pivot');
+    }
 }
 sub get_mode { return $_[0]->{mode}; }
 
@@ -254,6 +258,14 @@ sub _accumulate_candle {
     }
 
     $self->{_series}{$idx} = $point;
+}
+
+# reanchor_to_latest_pivot: al volver a modo auto desde manual.
+sub reanchor_to_latest_pivot {
+    my ($self) = @_;
+    return unless @{ $self->{_pivots} || [] };
+    my $latest = $self->{_pivots}[-1];
+    $self->_set_anchor( $latest->{index} ) if $latest && defined $latest->{index};
 }
 
 1;

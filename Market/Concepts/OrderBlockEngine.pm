@@ -84,19 +84,13 @@ sub new {
         metadata => {},
 
         # Sensibilidad de la búsqueda de la vela institucional.
-        # Si es 1 usa el high/low real; si es 0 usa el "parsed" (ajustado por
-        # volatilidad, igual que LuxAlgo con parsedHighs/parsedLows).
         use_parsed => $args{use_parsed} // 1,
-
-        # Umbral de volatilidad para parsear highs/lows (múltiplo de ATR).
-        # LuxAlgo usa 2 × ATR como frontera de "barra de alta volatilidad".
         vol_atr_mult => $args{vol_atr_mult} // 2.0,
-
-        # Umbral de desplazamiento en múltiplos de ATR (0.5 a 1.0 recomendado).
-        displacement_atr_mult => $args{displacement_atr_mult} // 1.0,
-        
-        # Filtro opcional de volumen relativo (percentil 0..100). undef = desactivado.
+        # 0 = desactivado (comportamiento David/LuxAlgo sin filtro extra)
+        displacement_atr_mult => $args{displacement_atr_mult} // 0,
         min_rel_volume_pctl   => $args{min_rel_volume_pctl},
+        # Mitigacion: 'highlow' (David default) | 'close'
+        ob_mitig_src => $args{ob_mitig_src} // 'highlow',
 
         %args,
     };
@@ -187,29 +181,36 @@ sub calculate {
         next if $swing_idx >= $break_idx;
         next if $break_idx > $last_index;
 
-        # ── Localiza la vela institucional en [swing_idx .. break_idx-1] ─
+        # ── Localiza la vela institucional en [swing_idx .. break_idx]
+        # David/Pine: slice(p.barIndex, bar_index) incluye la vela del break.
         my $ob_idx = $self->_find_ob_candle(
             \@candles, \@ph, \@pl,
-            $swing_idx, $break_idx - 1, $dir,
+            $swing_idx, $break_idx, $dir,
         );
         next unless defined $ob_idx;
 
         my $ob_candle = $candles[$ob_idx];
         next unless $ob_candle;
 
-        my $ob_high = $ob_candle->{high};
-        my $ob_low  = $ob_candle->{low};
+        # Zona OB = parsed high/low de la vela institucional (como David barHigh/barLow)
+        my $ob_high = $ph[$ob_idx] // $ob_candle->{high};
+        my $ob_low  = $pl[$ob_idx] // $ob_candle->{low};
         next unless defined $ob_high && defined $ob_low;
+        # Si parsed invirtio por alta volatilidad, normalizar
+        if ($ob_high < $ob_low) {
+            ($ob_high, $ob_low) = ($ob_low, $ob_high);
+        }
         next if $ob_high <= $ob_low;
 
-        # ── Gate 1: Filtro de Displacement ───────────────────────────────────
-        my $break_price = $candles[$break_idx]->{close};
-        my $displacement = $dir eq 'bullish' ? ($break_price - $ob_low) : ($ob_high - $break_price);
-        my $atr_break = $atr_series->[$break_idx] // $atr_series->[$last_index] // 1;
-        
-        if ($displacement < $self->{displacement_atr_mult} * $atr_break) {
-            $self->{metadata}{displacement_filtered}++;
-            next;
+        # Displacement filter: opcional (David no lo usa). Solo si displacement_atr_mult > 0.
+        if (($self->{displacement_atr_mult} // 0) > 0) {
+            my $break_price = $candles[$break_idx]->{close};
+            my $displacement = $dir eq 'bullish' ? ($break_price - $ob_low) : ($ob_high - $break_price);
+            my $atr_break = $atr_series->[$break_idx] // $atr_series->[$last_index] // 1;
+            if ($displacement < $self->{displacement_atr_mult} * $atr_break) {
+                $self->{metadata}{displacement_filtered}++;
+                next;
+            }
         }
 
         # ── Gate 2: Filtro de Volumen Relativo ───────────────────────────────

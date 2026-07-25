@@ -1,3 +1,4 @@
+# DEPRECATED — replaced by ZigZagVP2David (David variant)
 package Market::Indicators::ZigZagVolumeProfile;
 
 use strict;

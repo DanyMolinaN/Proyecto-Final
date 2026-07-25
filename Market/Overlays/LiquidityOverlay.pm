@@ -154,9 +154,8 @@ sub draw {
             my $fill     = _eq_color($eq->{type});
             next if ($eq->{type} || '') eq 'EQH' && !_enabled($settings, 'show_eqh');
             next if ($eq->{type} || '') eq 'EQL' && !_enabled($settings, 'show_eql');
-            # Linea del Equal: pivote origen → pivote final (o proyeccion si existe).
-            # La etiqueta va exactamente al centro del trazo, nunca en un extremo.
-            my $draw_end_idx = $eq->{end_index} // $eq->{invalidated_at} // $eq->{resolved_at} // $second_idx;
+            # David: linea solo entre los dos pivotes iguales (sin proyeccion).
+            my $draw_end_idx = $second_idx;
             my $x1       = $scale->index_to_center_x($first_idx);
             my $x2       = $scale->index_to_center_x($draw_end_idx);
             ($x1, $x2) = ($x2, $x1) if $x2 < $x1;
