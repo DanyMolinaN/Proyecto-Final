@@ -138,7 +138,7 @@ sub draw {
             next;
         }
 
-        my $is_mitigated = ($state eq 'PartiallyMitigated');
+        my $is_mitigated = ($state eq 'Mitigated');
         my $label = $type eq 'bullish' ? 'OB+' : $type eq 'bearish' ? 'OB-' : 'OB';
 
         # Colores: bullish=verde, bearish=rojo; mitigados más tenues

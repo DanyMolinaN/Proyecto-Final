@@ -58,6 +58,9 @@ sub new {
         overlay_refs    => $args{overlay_refs}    || {},
         # Referencia a OverlaySettings (opcional, para persistencia)
         overlay_settings => $args{overlay_settings},
+        
+        # Controlador de replay
+        replay_controller => $args{replay_controller},
 
         # Estado interno de cada boton
         _state => {
@@ -65,12 +68,15 @@ sub new {
             zigzag_mtf2_david  => 0,
             fibonacci_david    => 0,
             liquidity_david    => 0,
+            smc2_ob_fvg        => 0,
         },
         _current_tf      => '5m',   # temporalidad por defecto del ZigZag Int
         _toolbar_visible => 1,
 
         # Widgets (se almacenan para poder actualizar textos/colores)
         _btns => {},
+
+        _select_armed => {},   # flags de un solo uso: 'avwap' => 1/0, 'anchored_vp' => 1/0
     };
     bless $self, $class;
     return $self;
@@ -130,6 +136,113 @@ sub build {
     );
     $self->_build_toggle_btn( $row2, 'fibonacci_david', 'Fibonacci', C_FIB );
     $self->_build_toggle_btn( $row2, 'liquidity_david', 'Liquidity', C_LIQ );
+
+    # ── Fila 3: VWAP ────────────────────────────────────────────────────────
+    my $row3 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row3, 'anchored_vwap_david', 'AVWAP', '#2962ff' );
+
+    my $btn_avwap_auto = $row3->Button(
+        -text => 'Auto', -background => BG_BTN, -foreground => '#26a69a',
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+    my $btn_avwap_manual = $row3->Button(
+        -text => 'Manual (clic vela)', -background => BG_BTN, -foreground => FG_DIM,
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+
+    $btn_avwap_auto->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{avwap};
+        $ind->set_mode('auto') if $ind && $ind->can('set_mode');
+        $btn_avwap_auto->configure( -foreground => '#26a69a' );
+        $btn_avwap_manual->configure( -foreground => FG_DIM );
+        $self->{chart_engine}->request_render() if $self->{chart_engine};
+    });
+    $btn_avwap_manual->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{avwap};
+        $ind->set_mode('manual') if $ind && $ind->can('set_mode');
+        $self->{_select_armed}{avwap} = 1;   # se arma para el PROXIMO clic
+        $btn_avwap_auto->configure( -foreground => FG_DIM );
+        $btn_avwap_manual->configure( -foreground => '#ef5350' );
+    });
+
+    for my $band (qw(band1 band2 band3)) {
+        my $label = 'D' . substr($band, -1);
+        $row3->Button(
+            -text => $label, -background => BG_BTN, -foreground => FG_DIM,
+            -font => FONT_TF, -relief => 'flat', -padx => 4, -pady => 2,
+            -command => sub {
+                my $ov = $self->{overlay_refs}{avwap};
+                $ov->set_flag("show_$band", !$ov->{"show_$band"}) if $ov;
+                $self->{chart_engine}->request_render() if $self->{chart_engine};
+            },
+        )->pack( -side => 'left', -padx => 1 );
+    }
+
+    # ── Fila 4: AVP y Pivotes ───────────────────────────────────────────────
+    my $row4 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row4, 'pivot_anchors_david', 'Pivotes', '#ffd700' );
+    $self->_build_toggle_btn( $row4, 'anchored_vp_david', 'AVP', '#ffd700' );
+
+    $row4->Label( -text => 'Filas:', -background => $bg, -foreground => FG_DIM, -font => FONT_TF )
+        ->pack( -side => 'left', -padx => 4 );
+    my $avp_scale = $row4->Scale(
+        -from => 10, -to => 100, -resolution => 1, -orient => 'horizontal',
+        -length => 90, -showvalue => 1, -font => FONT_TF,
+        -command => sub {
+            my ($val) = @_;
+            my $ind = $self->{indicator_refs}{anchored_vp};
+            $ind->set_row_count($val + 0) if $ind;
+            $self->{chart_engine}->request_render() if $self->{chart_engine};
+        },
+    )->pack( -side => 'left', -padx => 2 );
+    $avp_scale->set( $self->{indicator_refs}{anchored_vp}{row_count} // 24 );
+
+    my $btn_avp_auto = $row4->Button(
+        -text => 'Auto', -background => BG_BTN, -foreground => '#26a69a',
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+    my $btn_avp_manual = $row4->Button(
+        -text => 'Manual (clic vela)', -background => BG_BTN, -foreground => FG_DIM,
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+
+    $btn_avp_auto->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{anchored_vp};
+        $ind->set_mode('auto') if $ind;
+        $self->{_select_armed}{anchored_vp} = 0;
+        $btn_avp_auto->configure( -foreground => '#26a69a' );
+        $btn_avp_manual->configure( -foreground => FG_DIM );
+        $self->{chart_engine}->request_render() if $self->{chart_engine};
+    });
+    $btn_avp_manual->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{anchored_vp};
+        $ind->set_mode('manual') if $ind;
+        $self->{_select_armed}{anchored_vp} = 1;   # se arma para el PROXIMO clic
+        $btn_avp_auto->configure( -foreground => FG_DIM );
+        $btn_avp_manual->configure( -foreground => '#ef5350' );
+    });
+
+    # ── Fila 5: SMC Structures 2 ──────────────────────────────────────────────
+    my $row5 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row5, 'smc2_ob_fvg', 'FVG', '#26a69a' );
+    for my $pair ( ['ob_swing' => 'OB Swing'], ['ob_internal' => 'OB Internal'] ) {
+        my ( $flag, $label ) = @$pair;
+        $row5->Button(
+            -text => $label, -background => BG_BTN, -foreground => FG_DIM,
+            -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+            -command => sub {
+                my $ov = $self->{overlay_refs}{smc2};
+                $ov->set_flag("show_$flag", !$ov->{"show_$flag"}) if $ov;
+                $self->{chart_engine}->request_render() if $self->{chart_engine};
+            },
+        )->pack( -side => 'left', -padx => 2 );
+    }
 
     return $self;
 }
@@ -267,6 +380,11 @@ sub _toggle_overlay {
             zigzag_mtf2_david => 'zigzag_mtf2',
             liquidity_david   => 'liquidity',
             fibonacci_david   => 'fibonacci',
+            anchored_vwap_david => 'avwap',
+            pivot_anchors_david => 'pivot_anchors',   
+            anchored_vp_david   => 'anchored_vp',    
+            smc2_ob_fvg         => 'smc2',
+
         }->{$key};
         my $ind = $ind_key ? $self->{indicator_refs}{$ind_key} : undef;
         my $md  = $ce->{market_data};
@@ -277,6 +395,11 @@ sub _toggle_overlay {
                 zigzag_mtf2 => 'zigzag_mtf2_david',
                 liquidity   => 'liquidity_david',
                 fibonacci   => 'fibonacci_david',
+                avwap       => 'anchored_vwap_david',
+                pivot_anchors => 'pivot_anchors_david',  
+                anchored_vp   => 'anchored_vp_david',     
+                smc2          => 'smc2',
+
             }->{$ind_key};
 
             my $needs = $self->_david_indicator_needs_recompute($ind, $md, $reg_name);
@@ -291,7 +414,8 @@ sub _toggle_overlay {
                             }
                         }
                     }
-                    $im->rebuild_one($reg_name, $md);
+                    $ind->reset() if $ind->can('reset');
+                    $ind->recompute($md, $self->{_pending_limit}{$reg_name});
                 }
                 elsif ( $ind->can('recompute') ) {
                     $ind->recompute($md);
@@ -347,15 +471,19 @@ sub _select_tf {
     }
 }
 
-# True si hay que recalcular (vacio o size/tf distinto al ultimo compute).
-# En replay el size esta recortado: exigir buffer EXACTO (nunca >=), si no
-# se reutilizarian segmentos calculados con velas futuras.
 sub _david_indicator_needs_recompute {
     my ( $self, $ind, $md, $reg_name ) = @_;
     return 1 unless $ind && $md;
 
-    my $size = $md->can('size') ? ($md->size // 0) : 0;
-    return 1 if $size <= 0;
+    my $total = $md->can('size') ? ($md->size // 0) : 0;
+    return 1 if $total <= 0;
+
+    my $size = $total;
+    my $rc = $self->{replay_controller};
+    if ( $rc && $rc->can('visible_limit') ) {
+        my $vl = $rc->visible_limit($total);
+        $size = $vl if defined $vl && $vl >= 0 && $vl < $total;
+    }
 
     my $tf = '';
     if ($reg_name && $reg_name eq 'zigzag_mtf2_david' && $ind->can('get_resolution')) {
@@ -369,15 +497,8 @@ sub _david_indicator_needs_recompute {
     my $fp = $ind->{_kevin_computed_fp};
     return 0 if defined $fp && $fp eq $want;
 
-    # Sin fingerprint: caliente solo si el buffer coincide EXACTO con size
-    if ($ind->can('get_segments')) {
-        my $segs = $ind->get_segments || [];
-        my $buf  = $ind->{_c} || [];
-        if (@$segs && @$buf == $size) {
-            $ind->{_kevin_computed_fp} = $want;
-            return 0;
-        }
-    }
+    $ind->{_kevin_computed_fp} = $want;
+    $self->{_pending_limit}{$reg_name} = $size;   # <-- guardamos el limite para el recompute
     return 1;
 }
 
@@ -408,6 +529,48 @@ sub handle_fibonacci_click {
     return unless $fib_ov && $fib_ov->can('handle_click');
     $fib_ov->handle_click($index);
     $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub is_avwap_manual_mode {
+    my ($self) = @_;
+    return $self->{_select_armed}{avwap} ? 1 : 0;
+}
+
+sub handle_avwap_click {
+    my ( $self, $index ) = @_;
+    my $ov = $self->{overlay_refs}{avwap};
+    return unless $ov && $ov->can('handle_click');
+    $ov->handle_click($index);
+    $self->{_select_armed}{avwap} = 0;   # desarma: el siguiente clic ya no ancla
+    $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub is_anchored_vp_manual_mode {
+    my ($self) = @_;
+    return $self->{_select_armed}{anchored_vp} ? 1 : 0;
+}
+
+sub handle_anchored_vp_click {
+    my ( $self, $index ) = @_;
+    my $ov = $self->{overlay_refs}{anchored_vp};
+    return unless $ov && $ov->can('handle_click');
+    $ov->handle_click($index);
+    $self->{_select_armed}{anchored_vp} = 0;
+    $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub recompute_if_needed {
+    my ( $self, $md ) = @_;
+    return unless $md;
+    my $im = $self->{chart_engine} && $self->{chart_engine}->{indicator_manager};
+    return unless $im;
+
+    my $ind = $im->get('zigzag_vp2_david');
+    return unless $ind;
+    if ( $self->_david_indicator_needs_recompute( $ind, $md, 'zigzag_vp2_david' ) ) {
+        $ind->reset() if $ind->can('reset');
+        $ind->recompute( $md, $self->{_pending_limit}{zigzag_vp2_david} );
+    }
 }
 
 1;

@@ -11,12 +11,12 @@ package Market::Concepts::OrderBlockEngine;
 #
 #   2. La zona del OB es la vela extrema dentro del tramo impulso:
 #      • BOS/CHoCH BULLISH → se originó desde un Swing LOW.
-#        Se busca la vela con el MENOR parsed_low (low ajustado por volatilidad)
+#        Se busca la vela con el MENOR parsed_high (high ajustado por volatilidad)
 #        en el rango [swing_index .. break_index].
 #        → OB BULLISH (zona de demanda)
 #
 #      • BOS/CHoCH BEARISH → se originó desde un Swing HIGH.
-#        Se busca la vela con el MAYOR parsed_high (high ajustado) en el rango.
+#        Se busca la vela con el MAYOR parsed_low (low ajustado) en el rango.
 #        → OB BEARISH (zona de oferta)
 #
 #   3. La vela extrema encontrada define:
@@ -28,7 +28,7 @@ package Market::Concepts::OrderBlockEngine;
 #      • OB BEARISH: price.high >=  ob.high  → ídem en dirección contraria
 #      El OB permanece dibujable hasta que el CLOSE lo invalide (cruza fuera).
 #
-#   5. Invalidación (el OB es excluido de active[] y del render, pero conservado en blocks[] hasta la poda por MAX_BLOCKS por scope):
+#   5. Invalidación (el OB es excluido de active[] y del render, pero conservado en blocks[] hasta la poda por MAX_BLOCKS):
 #      • OB BULLISH: close < ob.low (o swing origin)
 #      • OB BEARISH: close > ob.high (o swing origin)
 #
@@ -59,7 +59,7 @@ package Market::Concepts::OrderBlockEngine;
 #     break_index        => $break_idx,   # vela donde se confirmó el BOS/CHoCH
 #     swing_index        => $swing_idx,   # vela del pivote que fue roto
 #     confirmation_index => $break_idx,
-#     state              => 'Detected'|'PartiallyMitigated'|'Invalidated',
+#     state              => 'Detected'|'Mitigated'|'Invalidated',
 #     mitigated_index    => $i_or_undef,
 #     invalidated_index  => $i_or_undef,
 #     mitigation_pct     => 0..100,
@@ -69,7 +69,7 @@ package Market::Concepts::OrderBlockEngine;
 use strict;
 use warnings;
 
-# Número máximo de OBs por scope en el caché (previene fugas de memoria).
+# Número máximo de OBs en el caché (previene fugas de memoria).
 # El overlay sólo dibuja los N más recientes de cualquier forma.
 use constant MAX_BLOCKS => 200;
 
@@ -254,20 +254,13 @@ sub calculate {
     # ── Aplica mitigación e invalidación ──────────────────────────────────
     $self->_apply_lifecycle(\@blocks, \@candles, $last_index);
 
-    # Conserva solo los MAX_BLOCKS más recientes (por break_index) por cada scope (swing vs internal)
-    my @swing_blocks    = grep { ($_->{scope}//'') eq 'swing'    } @blocks;
-    my @internal_blocks = grep { ($_->{scope}//'') eq 'internal' } @blocks;
-
-    if (@swing_blocks > MAX_BLOCKS) {
-        @swing_blocks = sort { $b->{break_index} <=> $a->{break_index} } @swing_blocks;
-        @swing_blocks = @swing_blocks[0 .. MAX_BLOCKS - 1];
+    # ── Poda anti-fuga de memoria ─────────────────────────────────────────
+    # Conserva solo los MAX_BLOCKS más recientes (por break_index)
+    if (@blocks > MAX_BLOCKS) {
+        @blocks = sort { $b->{break_index} <=> $a->{break_index} } @blocks;
+        @blocks = @blocks[0 .. MAX_BLOCKS - 1];
+        @blocks = sort { $a->{break_index} <=> $b->{break_index} } @blocks;
     }
-    if (@internal_blocks > MAX_BLOCKS) {
-        @internal_blocks = sort { $b->{break_index} <=> $a->{break_index} } @internal_blocks;
-        @internal_blocks = @internal_blocks[0 .. MAX_BLOCKS - 1];
-    }
-    @blocks = (@swing_blocks, @internal_blocks);
-    @blocks = sort { $a->{break_index} <=> $b->{break_index} } @blocks;
 
     # ── Resultado ─────────────────────────────────────────────────────────
     my @active = grep { ($_->{state} // '') =~ /^(?:Detected|PartiallyMitigated)$/ } @blocks;

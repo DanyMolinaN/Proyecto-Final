@@ -216,6 +216,20 @@ sub _bind_all_canvas {
             return Tk::break;
         }
 
+        # --- David Tools: hook de AVWAP manual ---
+        if ( $self->{david_toolbar} && $self->{david_toolbar}->is_avwap_manual_mode() ) {
+            my $index = $self->{price_scale}->x_to_index($x);
+            $self->{david_toolbar}->handle_avwap_click($index);
+            return Tk::break;
+        }
+
+        if ( $self->{david_toolbar} && $self->{david_toolbar}->is_anchored_vp_manual_mode() ) {
+        my $index = $self->{price_scale}->x_to_index($x);
+        $self->{david_toolbar}->handle_anchored_vp_click($index);
+        return Tk::break;
+        }   
+
+
         if ($self->{_replay_select_mode}) {
             $self->_replay_pick_from_canvas($x, $y);
             return Tk::break;

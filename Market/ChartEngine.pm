@@ -69,6 +69,18 @@ use Market::Overlays::FibonacciDavidOverlay;
 use Market::Overlays::LiquidityDavidOverlay;
 use Market::ChartEngine::DavidToolbar;
 
+use Market::Indicators::AnchoredVWAPDavid;
+use Market::Overlays::AnchoredVWAPDavidOverlay;
+
+use Market::Indicators::PivotAnchorsDavid;
+use Market::Overlays::PivotAnchorsDavidOverlay;
+use Market::Indicators::AnchoredVolumeProfileDavid;
+use Market::Overlays::AnchoredVolumeProfileDavidOverlay;
+
+use Market::Indicators::SMCStructures2;
+use Market::Overlays::SMCStructures2Overlay;
+
+
 sub new {
     my ($class, %args) = @_;
     my $canvas            = $args{canvas};
@@ -203,6 +215,23 @@ sub new {
         source_zzvp2 => $zzvp2d_ind,   # modo auto usa pivots del ZigZagVP2
         mode         => 'auto',
     );
+    my $avwapd_ind = Market::Indicators::AnchoredVWAPDavid->new(
+        market_data => $market_data,
+        mode        => 'auto',
+    );
+    my $avwapd_ov = Market::Overlays::AnchoredVWAPDavidOverlay->new( source => $avwapd_ind );
+    my $pivotd_ind = Market::Indicators::PivotAnchorsDavid->new();
+    my $pivotd_ov  = Market::Overlays::PivotAnchorsDavidOverlay->new( source => $pivotd_ind );
+
+    my $avpd_ind = Market::Indicators::AnchoredVolumeProfileDavid->new(
+        market_data => $market_data,
+        mode        => 'auto',
+    );
+    my $avpd_ov = Market::Overlays::AnchoredVolumeProfileDavidOverlay->new( source => $avpd_ind );
+
+    my $smc2_ind = Market::Indicators::SMCStructures2->new();
+    my $smc2_ov  = Market::Overlays::SMCStructures2Overlay->new( source => $smc2_ind );
+
     # Liquidity David: reusar el ATR ya calculado por Kevin (si disponible)
     my $atr_existing = ($indicator_manager && $indicator_manager->can('get'))
         ? $indicator_manager->get('atr')
@@ -233,6 +262,14 @@ sub new {
         atr_panel            => $args{atr_panel}   || Market::Panels::ATRPanel->new(),
         price_scale          => $price_scale,
         atr_scale            => $atr_scale,
+
+        pivotd_overlay => $pivotd_ov,
+        pivotd_ind     => $pivotd_ind,
+        avpd_overlay   => $avpd_ov,
+        avpd_ind       => $avpd_ind,
+        smc2_overlay   => $smc2_ov,
+        smc2_ind       => $smc2_ind,
+
         # Overlays (render)
         liquidity_overlay    => $liquidity_overlay,
         structure_overlay    => $structure_overlay,
@@ -243,6 +280,10 @@ sub new {
         anchored_vwap_overlay => $anchored_vwap_overlay,
         dsvwap_overlay       => $dsvwap_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
+
+        avwapd_overlay => $avwapd_ov,
+        avwapd_ind     => $avwapd_ind,
+
         supply_demand_overlay => $supply_demand_overlay,
         trend_channel_overlay    => $trend_channel_overlay,
         trailing_extremes_overlay => $trailing_extremes_overlay,
@@ -306,6 +347,12 @@ sub new {
     $self->{atr_panel}->set_scale($atr_scale);
     $self->{overlay_manager}->initialize() if $self->{overlay_manager} && $self->{overlay_manager}->can('initialize');
     $self->{replay_controller}->initialize() if $self->{replay_controller} && $self->{replay_controller}->can('initialize');
+
+    $self->{indicator_manager}->register('anchored_vwap_david', $avwapd_ind, lazy_tf => 1);
+    $self->{indicator_manager}->register('pivot_anchors_david', $pivotd_ind, lazy_tf => 1);
+    $self->{indicator_manager}->register('anchored_vp_david', $avpd_ind, lazy_tf => 1);
+    $self->{indicator_manager}->register('smc2', $smc2_ind, lazy_tf => 1);
+
     $self->{timeframe_manager}->initialize() if $self->{timeframe_manager} && $self->{timeframe_manager}->can('initialize');
     $self->{viewport_controller}->initialize() if $self->{viewport_controller} && $self->{viewport_controller}->can('initialize');
     $self->_register_overlays();
@@ -331,21 +378,30 @@ sub new {
     # no se construye (el resto del sistema funciona sin el).
     if ( my $toolbar_parent = $args{david_toolbar_parent} ) {
         $self->{david_toolbar} = Market::ChartEngine::DavidToolbar->new(
-            parent           => $toolbar_parent,
-            overlay_manager  => $self->{overlay_manager},
-            chart_engine     => $self,
-            overlay_settings => $overlay_settings,
-            indicator_refs   => {
+            parent            => $toolbar_parent,
+            overlay_manager   => $self->{overlay_manager},
+            chart_engine      => $self,
+            overlay_settings  => $overlay_settings,
+            replay_controller => $self->{replay_controller},
+            indicator_refs    => {
                 zigzag_vp2  => $zzvp2d_ind,
                 zigzag_mtf2 => $zzmtf2d_ind,
                 fibonacci   => $fibd_ind,
                 liquidity   => $liqd_ind,
+                avwap       => $avwapd_ind,
+                pivot_anchors => $pivotd_ind,   
+                anchored_vp   => $avpd_ind,     
+                smc2          => $smc2_ind,
             },
             overlay_refs => {
                 zigzag_vp2  => $zzvp2d_ov,
                 zigzag_mtf2 => $zzmtf2d_ov,
                 fibonacci   => $fibd_ov,
                 liquidity   => $liqd_ov,
+                avwap       => $avwapd_ov,
+                pivot_anchors => $pivotd_ov,    
+                anchored_vp   => $avpd_ov,      
+                smc2          => $smc2_ov,
             },
         );
         $self->{david_toolbar}->build();

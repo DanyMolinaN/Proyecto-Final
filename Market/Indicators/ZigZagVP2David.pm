@@ -68,28 +68,15 @@ sub reset {
     delete $self->{_kevin_computed_fp};
 }
 
-# recompute($md): contrato de IndicatorManager::rebuild_all() de Kevin.
-# Itera update_at_index sobre todas las velas del MarketData.
 sub recompute {
-    my ( $self, $md ) = @_;
+    my ( $self, $md, $limit ) = @_;
     return unless $md;
     $self->reset();
-    my $size = $md->size // 0;
-    # Precargar velas + extremos rolling O(n) (antes O(n * swing_length)).
-    for my $idx ( 0 .. $size - 1 ) {
-        my $c = $md->get_candle($idx);
-        next unless defined $c;
-        $c = { %$c, ts => ($c->{ts} // $c->{timestamp}) };
-        $self->{_c}[$idx] = $c;
-        $self->{_atr}->update_at_index( $md, $idx );
+    my $total = $md->size // 0;
+    $limit = $total if !defined $limit || $limit > $total || $limit < 0;
+    for my $idx ( 0 .. $limit - 1 ) {
+        $self->update_at_index( $md, $idx );
     }
-    $self->_precompute_swing_extremes($size);
-    for my $idx ( 0 .. $size - 1 ) {
-        next unless defined $self->{_c}[$idx];
-        $self->_process_candle($idx);
-    }
-    my $tf = $md->can('active_tf') ? ($md->active_tf() // '') : '';
-    $self->{_kevin_computed_fp} = "$tf|$size";
 }
 
 sub update_at_index {

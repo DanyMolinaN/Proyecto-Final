@@ -196,6 +196,9 @@ sub render {
 sub _draw_overlays {
     my ($self) = @_;
     return unless $self->{canvas};
+    
+    $self->{david_toolbar}->recompute_if_needed($self->{market_data}) if $self->{david_toolbar};
+
     return unless $self->{overlay_manager};
 
     # Limpiar capas desactivadas. Las capas activas gestionan su propio diff:
@@ -382,6 +385,13 @@ sub _register_overlays {
         [zigzag_mtf2_david => $self->{zzmtf2d_overlay}, 1],
         [fibonacci_david   => $self->{fibd_overlay},    1],
         [liquidity_david   => $self->{liqd_overlay},    1],
+
+        [anchored_vwap_david => $self->{avwapd_overlay}, 1],
+
+
+        [pivot_anchors_david => $self->{pivotd_overlay}, 1],
+        [anchored_vp_david   => $self->{avpd_overlay}, 1],
+        [smc2_ob_fvg         => $self->{smc2_overlay}, 1],
     );
 
     for my $entry (@overlays) {
