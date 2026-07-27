@@ -106,7 +106,7 @@ sub _external_phase {
 }
 
 sub _sync_levels_from_internal_zigzag {
-    my ( $self, $market_data ) = @_;
+    my ( $self, $market_data, $idx ) = @_;
     my $zzmtf = $self->{zzmtf} or return;
     my $swings = $zzmtf->get_swings or return;
 
@@ -114,6 +114,22 @@ sub _sync_levels_from_internal_zigzag {
 
     for my $sw (@$swings) {
         next if $self->{_seen_swing_ids}{ $sw->{id} };
+
+        # FIX critico: nunca registrar un swing cuyo indice de origen sea
+        # POSTERIOR a la vela que se esta procesando ahora mismo. Sin este
+        # filtro, si $zzmtf ya fue calculado por completo de antemano (esto
+        # es exactamente lo que pasa en produccion: IndicatorManager alimenta
+        # zzmtf vela por vela durante la carga del CSV, pero
+        # Liquidity::calculate() hace su propio barrido completo despues,
+        # asi que ve TODO el historico de zzmtf desde el indice 0), se
+        # registrarian de golpe cientos de niveles "del futuro" en la
+        # primera vela, arruinando por completo la logica temporal de
+        # sweep/grab/run (swept_at_index, n_since, etc. dejan de tener
+        # sentido). Con este filtro, el swing simplemente se re-evalua en
+        # cada llamada posterior (no se marca como visto) hasta que $idx
+        # alcanza su propio indice de origen -- asi el motor es correcto
+        # sin importar si zzmtf se alimento en paralelo o ya esta completo.
+        next if defined $idx && $sw->{index} > $idx;
 
         my $phase = $self->_external_phase;
 

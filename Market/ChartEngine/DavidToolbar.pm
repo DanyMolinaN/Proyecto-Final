@@ -562,6 +562,15 @@ sub handle_anchored_vp_click {
 sub recompute_if_needed {
     my ( $self, $md ) = @_;
     return unless $md;
+
+    # Si Replay no esta activo, el fingerprint (tf|size) nunca cambia despues
+    # del primer calculo -- comprobarlo en cada frame de pan/zoom es trabajo
+    # desperdiciado que ralentiza el movimiento del grafico. Solo vale la
+    # pena la comprobacion mientras Replay esta encendido (el limite puede
+    # avanzar con Play/Step).
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->can('is_active') && $rc->is_active;
+
     my $im = $self->{chart_engine} && $self->{chart_engine}->{indicator_manager};
     return unless $im;
 

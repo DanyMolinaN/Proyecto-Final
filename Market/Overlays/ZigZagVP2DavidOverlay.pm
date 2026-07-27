@@ -37,9 +37,9 @@ sub new {
     my $self = {
         source              => $args{source},
         show_zigzag         => $args{show_zigzag}         // 1,
-        show_channel        => $args{show_channel}        // 1,
-        show_volume_profile => $args{show_volume_profile} // 1,
-        show_poc            => $args{show_poc}            // 1,
+        show_channel        => $args{show_channel}        // 0,
+        show_volume_profile => $args{show_volume_profile} // 0,
+        show_poc            => $args{show_poc}            // 0,
         # enabled: gestionado por OverlayManager (enable/disable)
         enabled             => 0,
     };

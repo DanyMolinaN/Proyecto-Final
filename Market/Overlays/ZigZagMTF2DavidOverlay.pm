@@ -32,7 +32,7 @@ sub new {
     my $self = {
         source      => $args{source},
         show_zigzag => $args{show_zigzag} // 1,
-        show_fibo   => $args{show_fibo}   // 1,
+        show_fibo   => $args{show_fibo}   // 0,
         label_left  => $args{label_left}  // 1,
         enabled     => 0,
     };

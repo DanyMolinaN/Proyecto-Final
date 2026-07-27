@@ -255,9 +255,10 @@ sub draw {
                 y_base     => $text_y,
                 text       => $label,
                 anchor     => $anchor,
-                fill       => $fill,
+                fill       => '#ffffff',   # chip solido: texto blanco
+                bg         => $fill,       # chip solido: fondo = color del evento
+                dot_color  => $fill,       # marcador circular en el precio exacto
                 font       => $self->{style}{event_font},
-                bg         => $self->{style}{bg},
                 line       => { x => $x, y1 => $price_y, y2 => $line_y },
                 type       => 'event',
                 event_type => $event->{type},
@@ -320,6 +321,16 @@ sub draw {
             my $line = $item->{line};
             $canvas->createLine($line->{x}, $line->{y1}, $line->{x}, $line->{y2},
                 -fill => $item->{fill}, -width => 1, -tags => ['overlay_liquidity_dynamic']);
+            if ($item->{type} && $item->{type} eq 'event' && $item->{dot_color}) {
+                # Punto marcador en el precio exacto de la ruptura (estilo
+                # TradingView profesional: circulo solido + chip de color).
+                my $r = 3;
+                $canvas->createOval(
+                    $line->{x} - $r, $line->{y1} - $r, $line->{x} + $r, $line->{y1} + $r,
+                    -fill => $item->{dot_color}, -outline => $item->{dot_color},
+                    -tags => ['overlay_liquidity_dynamic'],
+                );
+            }
             _draw_tag($canvas, $item, $self->{style});
         }
     }

@@ -216,8 +216,11 @@ sub update_at_index {
     my ( $self, $md, $idx ) = @_;
     my $c = $md->get_candle($idx);
     return unless defined $c;
+    # _sync ANTES de _ingest: los niveles nuevos que aparezcan en esta vela
+    # deben quedar disponibles para _update_state_machine (que corre dentro
+    # de _ingest) en la MISMA vela, no en la siguiente.
+    $self->_sync_levels_from_internal_zigzag($md, $idx);
     $self->_ingest($md, $c, $idx);
-    $self->_sync_levels_from_internal_zigzag($md);
 }
 
 sub update_last {
@@ -226,6 +229,7 @@ sub update_last {
     my $c   = $md->last_candle;
     return unless defined $c;
     $idx = $#{ $self->{_c} } + 1 unless defined $idx;
+    $self->_sync_levels_from_internal_zigzag($md, $idx);
     $self->_ingest($md, $c, $idx);
 }
 
