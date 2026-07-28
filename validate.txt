@@ -1,0 +1,19 @@
+=== PUNTO 3 ===
+
+=== PUNTO 4 ===
+Anchor Index 
+  Columna                  | Valor CSV | Valor Raw LiquiditySnapshot (pip_mid/size/etc)
+  ob_above_pip_1m          | 430       | undef
+  fvg_above_pip_1m         | 115       | undef
+  vwap_pip_10m             | 378.58533447684 | undef
+  vp_poc_pip_1h            | 515.253333333239 | undef
+  structure_above_kind_1m  | CHoCH     | NONE
+
+Anchor Index 
+  Columna                  | Valor CSV | Valor Raw LiquiditySnapshot (pip_mid/size/etc)
+  ob_above_pip_1m          | 160       | undef
+  fvg_above_pip_1m         | 24        | undef
+  vwap_pip_10m             | 28.0978079754132 | undef
+  vp_poc_pip_1h            | 245.253333333239 | undef
+  structure_above_kind_1m  | CHoCH     | NONE
+

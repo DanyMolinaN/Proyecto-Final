@@ -229,6 +229,7 @@ sub _build_tf_snapshot {
             vp_data   => $self->_run_vp($view, $tf, $closed_idx),
             mtf_data  => $self->_run_mtf($market_data, $tf, $anchor_ts, $closed_idx),
             liq_data  => $self->_run_liq($view, $tf, $market_data, $closed_idx),
+            smc_data  => $smc_result,
         };
         $self->{_memo_cache}{$memo_key} = $engines_cached;
     }
@@ -236,6 +237,7 @@ sub _build_tf_snapshot {
     # Precio de referencia: HLC3 de la vela de aparicion (1m)
     # Si $ref_price no esta definido lo usamos como 0 (los PIPs serian relativos a 0)
     my $rp = $ref_price // 0;
+    my $smc = $engines_cached->{smc_data};
 
     return {
         %$candle_data,
@@ -260,6 +262,10 @@ sub _build_tf_snapshot {
 
         # LiquidityDavid: Sweep/Grab/Run events + PIPs
         liq_events => $self->_pips_liq($engines_cached->{liq_data}, $rp),
+
+        # PASO 0: SMC estructura (BOS/CHoCH) y Equal High/Low, usando events de smc_result
+        structure_events => $self->_pips_structure($smc ? $smc->{events} : [], $rp),
+        eq_events        => $self->_pips_eq($smc        ? $smc->{events} : [], $rp),
     };
 }
 
@@ -509,13 +515,71 @@ sub _run_liq {
 # CONVERSION A PIPs
 # ===========================================================================
 
-# _to_pips($level, $ref_price) -> $distance_in_pips
+# _to_pips($level, $ref_price) -> $distance_in_pips (always >= 0)
 # 1 PIP = 1 / pip_factor (por defecto pip_factor = 10000 → 1 pip = 0.0001)
 sub _to_pips {
     my ($self, $level, $ref_price) = @_;
     return undef unless defined $level && defined $ref_price;
     return abs($level - $ref_price) * $self->{pip_factor};
 }
+
+# _signed_pips($level, $ref_price) -> signed pip (positive = level > ref_price)
+# Mismo patron que liq_events pero con signo para distinguir above/below.
+sub _signed_pips {
+    my ($self, $level, $ref_price) = @_;
+    return undef unless defined $level && defined $ref_price;
+    return ($level - $ref_price) * $self->{pip_factor};
+}
+
+# ---------------------------------------------------------------------------
+# _pips_structure($events_aref, $rp)
+# PASO 0: filtra de $smc_result->{events} solo los BOS y CHoCH.
+# Devuelve: [ { kind, direction, index, level, pip }, ... ]
+# pip tiene SIGNO: positivo si level > ref_price (nivel above), negativo si below.
+# ---------------------------------------------------------------------------
+sub _pips_structure {
+    my ($self, $events, $rp) = @_;
+    return [] unless ref $events eq 'ARRAY';
+    my @out;
+    for my $e (@$events) {
+        next unless ref $e eq 'HASH';
+        next unless defined $e->{kind};
+        next unless $e->{kind} eq 'BOS' || $e->{kind} eq 'CHoCH';
+        push @out, {
+            kind      => $e->{kind},
+            direction => $e->{direction},
+            index     => $e->{index},
+            level     => $e->{level},
+            pip       => $self->_signed_pips($e->{level}, $rp),
+        };
+    }
+    return \@out;
+}
+
+# ---------------------------------------------------------------------------
+# _pips_eq($events_aref, $rp)
+# PASO 0: filtra de $smc_result->{events} solo los EQH y EQL.
+# Devuelve: [ { kind, index, level, pip }, ... ]
+# pip tiene SIGNO: positivo si level > ref_price, negativo si below.
+# ---------------------------------------------------------------------------
+sub _pips_eq {
+    my ($self, $events, $rp) = @_;
+    return [] unless ref $events eq 'ARRAY';
+    my @out;
+    for my $e (@$events) {
+        next unless ref $e eq 'HASH';
+        next unless defined $e->{kind};
+        next unless $e->{kind} eq 'EQH' || $e->{kind} eq 'EQL';
+        push @out, {
+            kind  => $e->{kind},
+            index => $e->{index},
+            level => $e->{level},
+            pip   => $self->_signed_pips($e->{level}, $rp),
+        };
+    }
+    return \@out;
+}
+
 
 sub _pips_ob {
     my ($self, $blocks, $rp) = @_;
