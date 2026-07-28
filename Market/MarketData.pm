@@ -72,10 +72,13 @@ sub add_candle {
     push @{ $self->{data}->{"1m"} }, $candle;
 }
 
-# Minutos por temporalidad soportada (spec: 1m,5m,15m,1h,2h,4h,D,W).
+# Minutos por temporalidad soportada.
+# '10m' se agrega internamente (para LiquiditySnapshot/ML). NO se expone en
+# TimeframeManager ni en ningun selector de UI, para no romper nada existente.
 my %TF_MINUTES = (
     "1m"  => 1,
     "5m"  => 5,
+    "10m" => 10,
     "15m" => 15,
     "1H"  => 60,
     "2H"  => 120,
@@ -85,7 +88,8 @@ my %TF_MINUTES = (
 );
 
 # Orden canonico de temporalidades (de menor a mayor), util para UI y managers.
-my @TF_ORDER = qw(1m 5m 15m 1H 2H 4H 1D 1W);
+# '10m' se incluye aqui para que build_timeframes lo construya si se pide.
+my @TF_ORDER = qw(1m 5m 10m 15m 1H 2H 4H 1D 1W);
 
 # Desfase (segundos) aplicado al alinear los buckets de cada temporalidad.
 # El epoch 0 (1970-01-01) cae en JUEVES; el primer LUNES 00:00 es epoch
@@ -175,7 +179,8 @@ sub build_tf_candles {
 # de cada barra son exactos y no se acumulan errores de redondeo entre TFs.
 sub build_timeframes {
     my ($self) = @_;
-    for my $tf (qw(5m 15m 1H 2H 4H 1D 1W)) {
+    # 10m se construye junto con las demas TFs; es necesario para LiquiditySnapshot.
+    for my $tf (qw(5m 10m 15m 1H 2H 4H 1D 1W)) {
         $self->build_tf_candles($tf);
     }
     return $self->{data};
@@ -404,6 +409,87 @@ sub _recalc_effective_indices {
         }
         $self->{_effective_last_index}{$tf} = $idx;
     }
+}
+
+# get_candle_in_tf($tf, $index) -> \%candle | undef
+# Accede a una vela en la temporalidad $tf por indice $index SIN mutar
+# active_tf. Respeta la frontera replay: devuelve undef si $index queda
+# mas alla del ultimo indice efectivo de esa TF.
+#
+# Uso previsto: LiquiditySnapshot necesita leer velas de 10m y 1H sin
+# afectar el estado del chart.
+sub get_candle_in_tf {
+    my ($self, $tf, $index) = @_;
+    return unless defined $tf && defined $index;
+
+    # Construir la TF si aun no existe (primera vez que se pide 10m, etc.).
+    if (!exists $self->{data}{$tf} || !@{ $self->{data}{$tf} || [] }) {
+        return unless $TF_MINUTES{$tf};
+        $self->build_tf_candles($tf);
+    }
+
+    my $arr = $self->{data}{$tf};
+    return unless $arr && @$arr;
+
+    # Respetar frontera replay si esta activa.
+    if (defined $self->{_replay_boundary}) {
+        my $eff_last = $self->{_effective_last_index}{$tf} // -1;
+        return if $index > $eff_last;
+    }
+
+    return if $index < 0 || $index > $#$arr;
+    return $arr->[$index];
+}
+
+# find_closed_tf_index($tf, $anchor_ts) -> $closed_bucket_index | undef
+# Para un timestamp de aparicion $anchor_ts (de la vela de 1m donde aparecio
+# el fantasma), encuentra el indice del ultimo bucket CERRADO de la TF $tf.
+#
+# LOGICA ANTI-LEAKAGE:
+#   La busqueda binaria devuelve el bucket cuyo timestamp <= $anchor_ts.
+#   Ese bucket CONTIENE la vela de aparicion y NO esta cerrado todavia.
+#   El ultimo bucket verdaderamente cerrado es bucket_index - 1.
+#   Si bucket_index - 1 < 0 => sin datos previos cerrados => devuelve undef.
+#
+# En modo replay, adicionalmente se respeta _effective_last_index.
+sub find_closed_tf_index {
+    my ($self, $tf, $anchor_ts) = @_;
+    return unless defined $tf && defined $anchor_ts;
+
+    # Garantizar que la TF esta construida.
+    if (!exists $self->{data}{$tf} || !@{ $self->{data}{$tf} || [] }) {
+        return unless $TF_MINUTES{$tf};
+        $self->build_tf_candles($tf);
+    }
+
+    my $arr = $self->{data}{$tf};
+    return unless $arr && @$arr;
+
+    # Limite visible en modo replay.
+    my $max_idx = $#$arr;
+    if (defined $self->{_replay_boundary}) {
+        my $eff = $self->{_effective_last_index}{$tf} // -1;
+        return if $eff < 0;
+        $max_idx = $eff;
+    }
+
+    # Busqueda binaria: ultimo bucket con timestamp <= anchor_ts.
+    my ($lo, $hi) = (0, $max_idx);
+    my $found = -1;
+    while ($lo <= $hi) {
+        my $mid = int(($lo + $hi) / 2);
+        if ($arr->[$mid]{timestamp} <= $anchor_ts) {
+            $found = $mid;
+            $lo = $mid + 1;
+        } else {
+            $hi = $mid - 1;
+        }
+    }
+
+    # El bucket $found CONTIENE la aparicion => en curso => NO cerrado.
+    # El ultimo cerrado es $found - 1.
+    return undef if $found <= 0;   # sin datos cerrados de esta TF en ese momento
+    return $found - 1;
 }
 
 1;
