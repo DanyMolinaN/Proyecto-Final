@@ -261,18 +261,43 @@ if (scalar @$meta_rows == $n_rows) {
 print "\n" . "=" x 60 . "\n";
 print "RESUMEN FASE 2 (test headless)\n";
 print "=" x 60 . "\n";
+
 printf "  Apariciones totales  : %d\n", $n_rows + $discarded;
 printf "  Filas exportadas     : %d\n", $n_rows;
 printf "  Filas descartadas    : %d\n", $discarded;
 printf "  Columnas en dataset  : %d\n", scalar @all_cols;
 printf "  Columnas con vacios  : %d\n", scalar @with_some_empty;
-printf "  Columnas problematicas (>50%% vacias): %d\n", scalar @problematic;
 
-if ($n_rows > 0) {
-    print "\nRESULTADO: FASE 2 OK (test headless completado)\n";
-    print "  NOTA: Columnas problematicas marcadas para revision manual, pueden ser normales si la feature es rara (ej. EQH/EQL).\n" if @problematic;
+# Revisión de dispersidad (sparsity)
+my @KNOWN_SPARSE_COLUMNS = qw(
+    eq_above_pip_1m eq_above_kind_1m eq_below_pip_1m eq_below_kind_1m
+    eq_above_pip_10m eq_above_kind_10m eq_below_pip_10m eq_below_kind_10m
+    eq_above_pip_1h eq_above_kind_1h eq_below_pip_1h eq_below_kind_1h
+);
+my %is_sparse_allowed = map { $_ => 1 } @KNOWN_SPARSE_COLUMNS;
+
+my @problematic2;
+for my $c (@all_cols) {
+    next if $c eq 'anchor_index'; # Ignorar metadata
+    my $empty_cnt   = $empty_counts{$c} // 0;
+    my $fill_ratio  = 1.0 - $empty_cnt / ($n_rows || 1);
+    if ($fill_ratio < 0.5) {
+        if ($is_sparse_allowed{$c}) {
+            printf "  [SPARSE ESPERADO] %s: %.1f%% llenas (Eventos EQH/EQL raros)\n", $c, $fill_ratio * 100;
+        } else {
+            printf "  [!] ALERTA: Columna %s esta >50%% vacia (%.1f%% llenas)\n", $c, $fill_ratio * 100;
+            push @problematic2, $c;
+        }
+    }
+}
+
+printf "  Columnas problematicas (>50%% vacias fuera whitelist): %d\n", scalar @problematic2;
+
+if ($n_rows > 0 && scalar @problematic2 == 0) {
+    print "\nRESULTADO: FASE 2 OK (test headless pasado)\n";
     exit 0;
 } else {
-    printf "\nRESULTADO: FASE 2 FALLO — 0 filas exportadas\n";
+    printf "\nRESULTADO: FASE 2 FALLO — %d filas, %d columnas problematicas no esperadas\n",
+        $n_rows, scalar @problematic2;
     exit 1;
 }

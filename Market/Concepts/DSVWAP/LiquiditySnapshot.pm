@@ -588,19 +588,20 @@ sub _pips_ob {
     for my $b (@$blocks) {
         next unless ref $b eq 'HASH';
         push @out, {
-            type      => $b->{type},
-            kind      => $b->{kind},
-            scope     => $b->{scope},
-            state     => $b->{state},
-            high      => $b->{high},
-            low       => $b->{low},
-            price     => $b->{price},    # midpoint
-            thickness => defined $b->{high} && defined $b->{low}
-                         ? ($b->{high} - $b->{low}) : undef,
-            pip_mid   => $self->_to_pips($b->{price}, $rp),
-            pip_high  => $self->_to_pips($b->{high},  $rp),
-            pip_low   => $self->_to_pips($b->{low},   $rp),
-            index     => $b->{index},
+            type            => $b->{type},
+            kind            => $b->{kind},
+            scope           => $b->{scope},
+            state           => $b->{state},
+            high            => $b->{high},
+            low             => $b->{low},
+            price           => $b->{price},    # midpoint
+            thickness       => defined $b->{high} && defined $b->{low}
+                               ? ($b->{high} - $b->{low}) : undef,
+            pip_mid         => $self->_to_pips($b->{price}, $rp),
+            pip_mid_signed  => $self->_signed_pips($b->{price}, $rp),
+            pip_high        => $self->_to_pips($b->{high},  $rp),
+            pip_low         => $self->_to_pips($b->{low},   $rp),
+            index           => $b->{index},
         };
     }
     return \@out;
@@ -613,16 +614,17 @@ sub _pips_fvg {
     for my $f (@$fvgs) {
         next unless ref $f eq 'HASH';
         push @out, {
-            type       => $f->{type},
-            state      => $f->{state},
-            top        => $f->{top},
-            bottom     => $f->{bottom},
-            price      => $f->{price},   # midpoint
-            size       => $f->{size},    # espesor = top - bottom
-            pip_top    => $self->_to_pips($f->{top},    $rp),
-            pip_bottom => $self->_to_pips($f->{bottom}, $rp),
-            pip_mid    => $self->_to_pips($f->{price},  $rp),
-            index      => $f->{index},
+            type            => $f->{type},
+            state           => $f->{state},
+            top             => $f->{top},
+            bottom          => $f->{bottom},
+            price           => $f->{price},   # midpoint
+            size            => $f->{size},    # espesor = top - bottom
+            pip_top         => $self->_to_pips($f->{top},    $rp),
+            pip_bottom      => $self->_to_pips($f->{bottom}, $rp),
+            pip_mid         => $self->_to_pips($f->{price},  $rp),
+            pip_mid_signed  => $self->_signed_pips($f->{price}, $rp),
+            index           => $f->{index},
         };
     }
     return \@out;

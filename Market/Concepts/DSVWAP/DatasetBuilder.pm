@@ -371,12 +371,18 @@ sub flatten_above_below {
         my $pip = $elem->{$pip_field};
         next unless defined $pip;
 
-        # Para OB/FVG: pip es absoluto. Discriminamos por {type}:
-        #   bearish = por encima (resistencia) => above
-        #   bullish = por debajo (soporte)     => below
-        my $type = $elem->{type} // $elem->{kind} // '';
-        my $is_above = ($type =~ /bear/i) ? 1 :
-                       ($type =~ /bull/i) ? 0 : undef;
+        # Para determinar si está por encima (above) o por debajo (below)
+        # usamos preferentemente pip_mid_signed (positivo = above, negativo = below)
+        # Si no existe (legacy/fallback), usamos el tipo.
+        my $is_above;
+        if (defined $elem->{pip_mid_signed}) {
+            next if $elem->{pip_mid_signed} == 0; # ignora si esta exactamente en el ref_price (raro)
+            $is_above = $elem->{pip_mid_signed} > 0 ? 1 : 0;
+        } else {
+            my $type = $elem->{type} // $elem->{kind} // '';
+            $is_above = ($type =~ /bear/i) ? 1 :
+                        ($type =~ /bull/i) ? 0 : undef;
+        }
 
         next unless defined $is_above;
 
