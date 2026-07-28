@@ -47,6 +47,7 @@ use Market::Overlays::OrderBlockOverlay;
 use Market::Overlays::VolumeProfileOverlay;
 use Market::Overlays::TimePersistenceOverlay;
 use Market::Overlays::DSVWAPOverlay;
+use Market::Overlays::GhostTrailOverlay;
 use Market::Overlays::AnchoredVWAPOverlay;
 use Market::Overlays::FibonacciOverlay;
 use Market::Overlays::SupplyDemandOverlay;
@@ -167,6 +168,9 @@ sub new {
     my $dsvwap_overlay = Market::Overlays::DSVWAPOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
+    my $ghost_trails_overlay = Market::Overlays::GhostTrailOverlay->new(
+        canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
+    );
     my $fibonacci_overlay = Market::Overlays::FibonacciOverlay->new(
         canvas => $canvas, scale => $price_scale, settings => $overlay_settings,
     );
@@ -279,6 +283,7 @@ sub new {
         time_persistence_overlay => $time_persistence_overlay,
         anchored_vwap_overlay => $anchored_vwap_overlay,
         dsvwap_overlay       => $dsvwap_overlay,
+        ghost_trails_overlay => $ghost_trails_overlay,
         fibonacci_overlay    => $fibonacci_overlay,
 
         avwapd_overlay => $avwapd_ov,

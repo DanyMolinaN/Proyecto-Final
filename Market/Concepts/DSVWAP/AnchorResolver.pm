@@ -163,6 +163,9 @@ sub _emit_ghost {
     $self->{px1} = $index;
     $self->{py1} = $price;
 
+    # DEBUG:
+    # print "EMITTING GHOST: $index\n";
+
     $self->{bus}->dispatch(
         Market::Concepts::DSVWAP::Event->anchor_changed($index, $price, $dir)
     );

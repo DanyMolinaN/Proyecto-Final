@@ -129,35 +129,41 @@ sub count_trails_batch {
 # count_trails_batch_with_snapshot($market_data) -> \@results
 #
 # Extiende count_trails_batch agregando a cada registro el snapshot de
-# multi-temporalidad (10m y 1H) de la vela cerrada inmediatamente anterior
-# al momento de aparicion del fantasma.
+# multi-temporalidad (1m, 10m y 1H) de la vela cerrada inmediatamente anterior
+# al momento de aparicion del fantasma. Cada TF incluye los 9 engines:
+#   ob, fvg, fib, vwap (+ bandas), vp (POC/VAH/VAL), mtf (D/W), liq_events
+# y la distancia en PIPs de cada nivel respecto al precio HLC3 de aparicion.
 #
 # ANTI-LEAKAGE garantizado por LiquiditySnapshot + find_closed_tf_index:
 #   - Solo se usan buckets cuyo cierre fue completamente procesado antes
 #     del timestamp de la vela de 1m de aparicion.
-#   - Si no hay bucket cerrado disponible, tf_10m / tf_1h = undef (no se
-#     inventa un valor ni se usa el bucket en curso).
+#   - Si no hay bucket cerrado disponible => undef (no se inventa nada).
 #   - Caso edge: aparicion en el primer bucket de la TF => undef.
-#
-# Parametros:
-#   $market_data - instancia de Market::MarketData (ya poblada con datos)
 #
 # Devuelve \@results con cada elemento conteniendo:
 #   {
-#     anchor_index, anchor_price, anchor_dir, anchor_ts,
+#     anchor_index, anchor_price, anchor_dir, anchor_ts, ref_price (HLC3),
 #     trails_3m, trails_5m, trails_10m, trails_15m,
-#     tf_10m => { open,high,low,close,volume,ts,index } | undef,
-#     tf_1h  => { open,high,low,close,volume,ts,index } | undef,
+#     tf_1m  => { OHLCV + ob, fvg, fib, vwap, vp, mtf, liq_events } | undef,
+#     tf_10m => idem con anti-leakage | undef,
+#     tf_1h  => idem con anti-leakage | undef,
 #   }
 # -----------------------------------------------------------------------------
 sub count_trails_batch_with_snapshot {
-    my ($self, $market_data) = @_;
+    my ($self, $market_data, %opts) = @_;
 
     # Primero obtenemos los conteos de trails (Fase 0, ya validados).
     my $base_results = $self->count_trails_batch();
 
-    # Instanciar el modulo de snapshot (sin estado; reutilizable).
-    my $snapshot_engine = Market::Concepts::DSVWAP::LiquiditySnapshot->new();
+    # Instanciar el modulo de snapshot.
+    # pip_factor por defecto = 4 (COMEX Gold Futures GC/MGC):
+    #   1 tick = $0.25  =>  pip_factor = 4  =>  1 pip = 1 tick
+    #   Para Forex 5-digit usar pip_factor=10000; para NQ/ES usar segun tick.
+    my $snapshot_engine = Market::Concepts::DSVWAP::LiquiditySnapshot->new(
+        pip_factor => $opts{pip_factor}  // 4,
+        window_1m  => $opts{window_1m}   // 500,
+        window_10m => $opts{window_10m}  // 300,
+    );
 
     # Construimos un indice rapido: anchor_index -> ts desde history_appearances.
     my %ts_by_index;
@@ -165,7 +171,7 @@ sub count_trails_batch_with_snapshot {
         $ts_by_index{ $app->{index} } = $app->{ts};
     }
 
-    # Para cada resultado base, enriquecemos con el snapshot.
+    # Para cada resultado base, enriquecemos con el snapshot completo (3 TFs + engines).
     my @enriched;
     for my $row (@$base_results) {
         my $ai = $row->{anchor_index};
@@ -178,15 +184,20 @@ sub count_trails_batch_with_snapshot {
             $ts = $c1m->{timestamp} if $c1m;
         }
 
+        # snapshot_for_anchor devuelve: { anchor_ts, anchor_index, ref_price,
+        #   tf_1m => {..., ob, fvg, fib, vwap, vp, mtf, liq_events},
+        #   tf_10m => idem, tf_1h => idem }
         my $snap = defined $ts
             ? $snapshot_engine->snapshot_for_anchor($market_data, $ts, $ai)
-            : { tf_10m => undef, tf_1h => undef };
+            : { ref_price => undef, tf_1m => undef, tf_10m => undef, tf_1h => undef };
 
         push @enriched, {
-            %$row,               # trails_Xm, anchor_price, anchor_dir, anchor_index
-            anchor_ts => $ts,
-            tf_10m    => $snap->{tf_10m},
-            tf_1h     => $snap->{tf_1h},
+            %$row,                        # trails_Xm, anchor_price, anchor_dir, anchor_index
+            anchor_ts  => $ts,
+            ref_price  => $snap->{ref_price},  # HLC3 de la vela de aparicion
+            tf_1m      => $snap->{tf_1m},      # snapshot 1m con engines
+            tf_10m     => $snap->{tf_10m},     # snapshot 10m con engines (anti-leakage)
+            tf_1h      => $snap->{tf_1h},      # snapshot 1H con engines (anti-leakage)
         };
     }
 

@@ -9,6 +9,7 @@ use Market::Concepts::DSVWAP::SwingEngine;
 use Market::Concepts::DSVWAP::AnchorResolver;
 use Market::Concepts::DSVWAP::VWAPEngine;
 use Market::Concepts::DSVWAP::GhostEngine;
+use Market::Concepts::DSVWAP::GhostTrailCounter;
 use Market::Concepts::DSVWAP::Event;
 
 # =============================================================================
@@ -119,6 +120,11 @@ sub calculate {
         $self->{show_miss},
     );
 
+    my $ghost_trail_counter = Market::Concepts::DSVWAP::GhostTrailCounter->new(
+        $bus,
+        $cache,
+    );
+
     # ------------------------------------------------------------------
     # 3. Iterar la serie cronológicamente y despachar NewBarEvent.
     #    Equivalente al: for (my $b=0; $b<$n; $b++) del motor original.
@@ -172,6 +178,8 @@ sub calculate {
         zigzag_lines   => $cache->{zigzag_lines},
         ghost_line     => $cache->{ghost_line},
         ghost_label    => $cache->{ghost_label},
+        ghost_trails   => $cache->{ghost_trails},
+        _ghost_counter => $ghost_trail_counter, # Utilizado para acceder al reporte en batch
     };
 
     $self->{_last_result} = $result;

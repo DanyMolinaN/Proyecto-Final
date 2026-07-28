@@ -98,4 +98,17 @@ sub ghost_vwap_accumulated {
     };
 }
 
+sub ghost_trail_event {
+    my ($class, $index, $ts, $x_last, $y_last, $ghost_dir, $anchor_index) = @_;
+    return {
+        type         => 'GhostTrailEvent',
+        index        => $index,
+        ts           => $ts,
+        x_last       => $x_last,
+        y_last       => $y_last,
+        ghost_dir    => $ghost_dir,
+        anchor_index => $anchor_index,
+    };
+}
+
 1;

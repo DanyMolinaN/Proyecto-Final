@@ -73,6 +73,7 @@ sub schema {
             options => [
                 [show_anchored_vwap  => 'Anchored VWAP'],
                 [show_dynamic_vwap   => 'Dynamic VWAP'],
+                [show_ghost_trails   => 'Ghost Trails'],
                 [show_volume_profile => 'Volume Profile'],
                 [show_time_persistence => 'Time Persistence'],
             ],
@@ -187,6 +188,7 @@ sub _default_values {
     $values{show_supply_demand}     = 0;  # default OFF (overlay registrado)
     $values{show_anchored_vwap}     = 0;
     $values{show_dynamic_vwap}      = 0;
+    $values{show_ghost_trails}      = 0;
     $values{show_volume_profile}    = 0;
     $values{show_time_persistence}  = 0;
     $values{show_signals}           = 0;  # sin overlay registrado

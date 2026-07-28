@@ -370,6 +370,7 @@ sub _register_overlays {
         [time_persistence => $self->{time_persistence_overlay}],
         [anchored_vwap   => $self->{anchored_vwap_overlay}],
         [dynamic_vwap    => $self->{dsvwap_overlay}],
+        [ghost_trails    => $self->{ghost_trails_overlay}],
         [fibonacci       => $self->{fibonacci_overlay}],
         [supply_demand   => $self->{supply_demand_overlay}],
         [trend_channel   => $self->{trend_channel_overlay}],

@@ -480,6 +480,7 @@ sub _sync_overlay_layer_state {
     my $volume_profile_on = $s->enabled('show_volume_profile');
     my $anchored_vwap_on  = $s->enabled('show_anchored_vwap');
     my $dynamic_vwap_on   = $s->enabled('show_dynamic_vwap');
+    my $ghost_trails_on   = $s->enabled('show_ghost_trails');
     my $fibonacci_on      = $s->enabled('show_fibonacci');
     my $time_persistence_on = $s->enabled('show_time_persistence');
     my $supply_demand_on  = $s->enabled('show_supply_demand');
@@ -498,6 +499,7 @@ sub _sync_overlay_layer_state {
         [time_persistence => $time_persistence_on],
         [anchored_vwap => $anchored_vwap_on],
         [dynamic_vwap  => $dynamic_vwap_on],
+        [ghost_trails  => $ghost_trails_on],
         [fibonacci     => $fibonacci_on],
         [supply_demand => $supply_demand_on],
         [trend_channel     => $trend_channel_on],
@@ -559,6 +561,7 @@ sub _key_to_overlay_map {
         show_zzmtf_external     => 'zzmtf_overlay',
         show_anchored_vwap      => 'anchored_vwap',
         show_dynamic_vwap       => 'dynamic_vwap',
+        show_ghost_trails       => 'ghost_trails',
         show_volume_profile     => 'volume_profile',
         show_time_persistence   => 'time_persistence',
         show_signals            => undef,
