@@ -81,8 +81,9 @@ sub visible_for_zoom {
 
     return 1 if $args{protected};
     return 1 if $priority >= $PRIORITY{eqh};
-    # HH/HL/LH/LL/SH/SL externos NO se ocultan por zoom: solo por toggle del
-    # usuario o por politica explicita de simplificacion (internal / minor).
+    # HH/HL/LH/LL/SH/SL externos SIEMPRE visibles: solo se ocultan por toggle
+    # del usuario o por colision entre etiquetas, NUNCA por zoom.
+    return 1 if $kind eq 'swing' && $scope ne 'internal';
     return 0 if $tier eq 'summary' && (
         $scope eq 'internal'
         || $kind eq 'internal_zigzag'

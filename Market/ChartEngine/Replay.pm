@@ -115,7 +115,7 @@ sub _replay_sync_market_boundary {
 }
 
 # _refresh_structure_zigzag()
-# Recalcula engines visibles (SMC/FVG/OB/TLC/...) y avanza David Tools activos.
+# Recalcula engines visibles (SMC/FVG/OB/TLC/...) y avanza Tools Extra activos.
 sub _refresh_structure_zigzag {
     my ($self) = @_;
     return unless $self->{market_data};
@@ -148,7 +148,7 @@ sub _refresh_structure_zigzag {
         push @only, 'smc_structure';
         push @only, 'fvg'           if !$s || $on->('show_fvg');
         push @only, 'orderblock'    if !$s || $on->('show_ob_external') || $on->('show_ob_internal')
-            || $on->('show_orderblocks') || $on->('show_trend_channel');
+            || $on->('show_orderblocks');
         push @only, 'trend_channel' if !$s || $on->('show_trend_channel');
         push @only, 'liquidity'     if $on->('show_eqh') || $on->('show_eql')
             || $on->('show_liquidity_levels') || $on->('show_sweeps')
@@ -179,7 +179,7 @@ sub _refresh_david_indicators_for_replay {
     my $md = $self->{market_data} or return;
     my $rc = $self->{replay_controller};
 
-    my @keys = qw(zigzag_vp2_david zigzag_mtf2_david fibonacci_david liquidity_david);
+    my @keys = qw(zigzag_vp2_david zigzag_mtf2_Dany fibonacci_david liquidity_david);
     my @active = grep {
         $om->can('is_enabled') && $om->is_enabled($_)
     } @keys;

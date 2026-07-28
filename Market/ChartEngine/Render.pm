@@ -181,6 +181,16 @@ sub render {
         }
     }
 
+    # Fase 6 — Ghost Trail Prediction Panel (demo)
+    if ($self->{ghost_prediction_panel}) {
+        $self->{ghost_prediction_panel}->render(
+            $self->{canvas},
+            $self->{price_scale},
+            $self->{replay_controller},
+            $self->{analysis_cache},
+        );
+    }
+
     # Eje de tiempo al fondo (debajo del panel ATR).
     $self->{price_panel}->draw_time_axis(
         $self->{canvas}, $tick_labels, $self->{price_scale},
@@ -381,9 +391,9 @@ sub _register_overlays {
         [mtf_levels        => $self->{mtf_levels_overlay}],
         [zzmtf_overlay     => $self->{zzmtf_overlay}],
 
-        # --- David Tools (desactivados por defecto; DavidToolbar los activa) ---
+        # --- Tools Extra (desactivados por defecto; ToolsExtra toolbar los activa) ---
         [zigzag_vp2_david  => $self->{zzvp2d_overlay},  1],
-        [zigzag_mtf2_david => $self->{zzmtf2d_overlay}, 1],
+        [zigzag_mtf2_Dany => $self->{zzmtf2d_overlay}, 1],
         [fibonacci_david   => $self->{fibd_overlay},    1],
         [liquidity_david   => $self->{liqd_overlay},    1],
 
@@ -399,7 +409,7 @@ sub _register_overlays {
         my ($name, $overlay, $no_enable) = @$entry;
         next unless $overlay;
         $self->{overlay_manager}->register($name, $overlay);
-        # Los overlays David (no_enable=1) arrancan desactivados; el DavidToolbar
+        # Los overlays de Tools Extra (no_enable=1) arrancan desactivados; el toolbar
         # los activa cuando el usuario pulsa el boton correspondiente.
         unless ($no_enable) {
             $self->{overlay_manager}->enable($name) if $self->{overlay_manager}->can('enable');

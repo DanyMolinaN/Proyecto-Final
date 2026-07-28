@@ -432,7 +432,7 @@ sub set_timeframe {
         $self->{timeframe_manager}->set_active($tf);
     }
 
-    # Rebuild de indicadores core (ATR, etc.). Los David Tools son lazy_tf y
+    # Rebuild de indicadores core (ATR, etc.). Los Tools Extra son lazy_tf y
     # se omiten aqui; solo se recomputan si su overlay esta activo.
     if ($self->{indicator_manager}) {
         $self->{indicator_manager}->rebuild_all($self->{market_data});
@@ -455,7 +455,7 @@ sub set_timeframe {
 }
 
 # Recalcula solo los indicadores David cuyo overlay este habilitado.
-# Evita ~4-5s de LiquidityDavid/ZigZag en cada tecla 1-8 cuando David Tools
+# Evita ~4-5s de LiquidityDavid/ZigZag en cada tecla 1-8 cuando Tools Extra
 # estan apagados (caso tipico).
 sub _recompute_active_david_indicators {
     my ($self) = @_;
@@ -464,7 +464,7 @@ sub _recompute_active_david_indicators {
 
     my %map = (
         zigzag_vp2_david  => 'zigzag_vp2_david',
-        zigzag_mtf2_david => 'zigzag_mtf2_david',
+        zigzag_mtf2_Dany => 'zigzag_mtf2_Dany',
         fibonacci_david   => 'fibonacci_david',
         liquidity_david   => 'liquidity_david',
     );

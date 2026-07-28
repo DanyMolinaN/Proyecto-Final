@@ -174,8 +174,8 @@ sub _build_price_action_groups {
 
     my %opt_by_key = map { $_->[0] => $_ } grep { $_ && ref $_ eq 'ARRAY' && defined $_->[0] } @$options;
 
-    # Altura suficiente para 4 elementos sin cortarlos
-    my $fixed_h     = 100;
+    # Altura suficiente para hasta 8 elementos (max keys en cualquier grupo) sin cortarlos
+    my $fixed_h     = 180;
     my $default_gid = 'pa_market_structure';
     $self->{_price_action_active} = undef;
     $self->{_price_action_slot_h} = $fixed_h;
@@ -426,22 +426,72 @@ sub _toggle_indicator_section {
     return $self;
 }
 
-# set_overlay_option
 sub set_overlay_option {
     my ($self, $key, $enabled) = @_;
     return unless $self->{overlay_settings};
     $self->{overlay_settings}->set($key, $enabled);
     $self->{overlay_settings}->save() if $self->{overlay_settings}->can('save');
-    $self->_sync_overlay_layer_state();
-    # Al activar un overlay, recalcular solo engines necesarios (lazy real).
-    if ($enabled && $self->can('rebuild_analysis_cache')) {
-        $self->rebuild_analysis_cache();
+    eval { $self->_sync_overlay_layer_state(); };
+
+    if ($enabled && $self->{analysis_cache} && $self->can('_engine_missing_for_key')) {
+        my $missing = $self->_engine_missing_for_key($key);
+        if ($missing) {
+            eval { $self->rebuild_analysis_cache(keep_cache => 1); };
+        }
     }
-    $self->render();
+    elsif ($enabled && !$self->{analysis_cache} && $self->can('rebuild_analysis_cache')) {
+        eval { $self->rebuild_analysis_cache(); };
+    }
+
+    $self->request_render();
     return $self;
 }
 
-# set_overlay_enabled
+sub _engine_missing_for_key {
+    my ($self, $key) = @_;
+    return 0 unless $self->{analysis_cache};
+    my $cache = $self->{analysis_cache};
+
+    my %need = (
+        smc_structure => [qw(
+            show_swing_high show_swing_low
+            show_hh show_hl show_lh show_ll
+            show_bos_external show_bos_internal
+            show_choch_external show_choch_internal
+            show_internal_zigzag show_external_zigzag
+            show_internal_swings show_external_swings
+            show_eqh show_eql
+            show_fvg show_ob_external show_ob_internal
+            show_fibonacci show_strong_weak_hl
+            show_premium_discount show_trend_channel
+        )],
+        liquidity => [qw(
+            show_liquidity_levels show_internal_liquidity
+            show_external_liquidity show_sweeps show_grabs show_runs
+            show_eqh show_eql
+        )],
+        fvg => [qw(show_fvg)],
+        orderblock => [qw(show_ob_external show_ob_internal)],
+        fibonacci => [qw(show_fibonacci)],
+        trend_channel => [qw(show_trend_channel)],
+        trailing_extremes => [qw(show_strong_weak_hl show_premium_discount)],
+        premium_discount => [qw(show_premium_discount)],
+        anchored_vwap => [qw(show_anchored_vwap)],
+        dynamic_vwap => [qw(show_dynamic_vwap show_ghost_trails show_ghost_prediction_panel)],
+        volume_profile => [qw(show_volume_profile)],
+        time_persistence => [qw(show_time_persistence)],
+        supply_demand => [qw(show_supply_demand)],
+        mtf_levels => [qw(show_daily_levels show_weekly_levels show_monthly_levels)],
+        zzmtf_overlay => [qw(show_zzmtf_internal show_zzmtf_external)],
+    );
+
+    for my $engine (keys %need) {
+        next unless grep { $_ eq $key } @{ $need{$engine} };
+        return $engine unless $cache->{$engine};
+    }
+    return 0;
+}
+
 sub set_overlay_enabled {
     my ($self, $name, $enabled) = @_;
     return unless $self->{overlay_manager};
@@ -451,7 +501,7 @@ sub set_overlay_enabled {
     else {
         $self->{overlay_manager}->disable($name) if $self->{overlay_manager}->can('disable');
     }
-    $self->render();
+    $self->request_render();
     return $self;
 }
 
@@ -508,11 +558,12 @@ sub _sync_overlay_layer_state {
         [mtf_levels        => $mtf_levels_on],
     ) {
         my ($name, $on) = @$pair;
+        next unless $self->{overlay_manager}->get($name);
         if ($on) {
-            $self->{overlay_manager}->enable($name)  if $self->{overlay_manager}->can('enable');
+            $self->{overlay_manager}->enable($name);
         }
         else {
-            $self->{overlay_manager}->disable($name) if $self->{overlay_manager}->can('disable');
+            $self->{overlay_manager}->disable($name);
         }
     }
     return $self;
@@ -562,6 +613,7 @@ sub _key_to_overlay_map {
         show_anchored_vwap      => 'anchored_vwap',
         show_dynamic_vwap       => 'dynamic_vwap',
         show_ghost_trails       => 'ghost_trails',
+        show_ghost_prediction_panel => 'dynamic_vwap',  # necesita ModularEngine para ghost_trails
         show_volume_profile     => 'volume_profile',
         show_time_persistence   => 'time_persistence',
         show_signals            => undef,

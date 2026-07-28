@@ -158,8 +158,12 @@ my $anchored_vp = Market::Indicators::AnchoredVolumeProfile->new(
 # lazy_tf: el perfil anclado vivo esta en EngineRegistry (volume_profile).
 $indicator_manager->register('anchored_vp', $anchored_vp, lazy_tf => 1);
 
-# 5. TrendLineChannel (logica David: ancla en OB + extremo opuesto + ATR).
-my $trend_channel_engine = Market::Indicators::TrendLineChannel->new(mode => 'auto');
+# 5. TrendLineChannel (pivotes ZZMTF + tendencia SMCStructureEngine).
+my $trend_channel_engine = Market::Indicators::TrendLineChannel->new(
+    zzmtf                   => $indicator_manager->get('zigzag_mtf2_Dany'),
+    min_bars_between_pivots => 5,
+    touch_tolerance_atr     => 0.1,
+);
 
 # 6. TrailingExtremes (usa datos del SMC; se recalcula via EngineRegistry).
 my $trailing_extremes_engine = Market::Indicators::TrailingExtremes->new();
@@ -231,14 +235,14 @@ $engine_registry->register('fibonacci', $fibonacci_engine,
     },
 );
 
-# TrendLineChannel (David): ancla en Order Block activo + extremo opuesto
+# TrendLineChannel (SMC): pivotes ZZMTF + tendencia SMCStructureEngine
 $engine_registry->register('trend_channel', $trend_channel_engine,
-    deps => ['orderblock', 'smc_structure'],
+    deps => ['smc_structure'],
     calc => sub {
         my ($eng, $market_data, $cache, %args) = @_;
         return $eng->calculate(
             $market_data,
-            orderblocks   => $cache->{orderblock} || {},
+            smc_structure => $cache->{smc_structure} || {},
             atr_indicator => $atr200_indicator,
             %args,
         );
@@ -425,13 +429,13 @@ my $engine = Market::ChartEngine->new(
     width             => 1000,
     height            => 700,
     max_visible_bars  => 1500,
-    david_toolbar_parent => $mw,               # monta David Tools (ZZ/Fib/Liq)
+    tools_extra_parent   => $mw,               # monta Tools Extra (ZZ/Fib/Liq/GhostPred)
 );
 
 # Tras crear ChartEngine, los indicadores David ya estan registrados:
 # forzar un recompute completo (el CSV ya se cargo antes de new()).
 if ($indicator_manager->can('get')) {
-    for my $key (qw(zigzag_vp2_david zigzag_mtf2_david fibonacci_david liquidity_david)) {
+    for my $key (qw(zigzag_vp2_david zigzag_mtf2_Dany fibonacci_david liquidity_david)) {
         my $ind = $indicator_manager->get($key);
         next unless $ind && $ind->can('recompute');
         $ind->recompute($market);

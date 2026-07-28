@@ -96,6 +96,12 @@ sub schema {
             ],
         },
         {
+            id => 'demo', label => 'Demo (Fase 6)',
+            options => [
+                [show_ghost_prediction_panel => 'Ghost Trail Prediction'],
+            ],
+        },
+        {
             id => 'strategies', label => 'Strategies',
             options => [
                 [show_signals => 'Signals'],
@@ -208,6 +214,7 @@ sub _default_values {
     $values{show_zzmtf_external}    = 0;
     $values{zzmtf_internal_tf}      = '15m';
     $values{zzmtf_external_tf}      = '1h';
+    $values{show_ghost_prediction_panel} = 0;
     return \%values;
 }
 

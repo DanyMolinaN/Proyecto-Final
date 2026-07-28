@@ -207,7 +207,7 @@ sub _bind_all_canvas {
         my $x = $canvas->XEvent->x;
         my $y = $canvas->XEvent->y;
 
-        # --- David Tools: hook de Fibonacci manual (Fase 5) ---
+        # --- Tools Extra: hook de Fibonacci manual (Fase 5) ---
         # Si el overlay Fibonacci David esta en modo 'manual', rutear el click
         # al anchor handler y consumirlo. No afecta ningun otro feature.
         if ( $self->{david_toolbar} && $self->{david_toolbar}->is_fibonacci_manual_mode() ) {
@@ -216,7 +216,7 @@ sub _bind_all_canvas {
             return Tk::break;
         }
 
-        # --- David Tools: hook de AVWAP manual ---
+        # --- Tools Extra: hook de AVWAP manual ---
         if ( $self->{david_toolbar} && $self->{david_toolbar}->is_avwap_manual_mode() ) {
             my $index = $self->{price_scale}->x_to_index($x);
             $self->{david_toolbar}->handle_avwap_click($index);

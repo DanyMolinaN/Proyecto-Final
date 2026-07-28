@@ -99,13 +99,11 @@ sub count_trails_batch {
     for my $app (@{ $self->{history_appearances} }) {
         my $a = $app->{index};
 
-        # Contamos trails en (a, a+N] con busqueda binaria.
         my $c_3  = _count_in_range($a, $a + 3,  \@trail_indices);
         my $c_5  = _count_in_range($a, $a + 5,  \@trail_indices);
         my $c_10 = _count_in_range($a, $a + 10, \@trail_indices);
         my $c_15 = _count_in_range($a, $a + 15, \@trail_indices);
 
-        # Verificacion de monotonia (invariante garantizado por construccion).
         if (!($c_3 <= $c_5 && $c_5 <= $c_10 && $c_10 <= $c_15)) {
             warn "BUG DETECTADO: Monotonia rota para ancla en index $a. " .
                  "Conteos: 3m=$c_3, 5m=$c_5, 10m=$c_10, 15m=$c_15\n";
@@ -123,6 +121,37 @@ sub count_trails_batch {
     }
 
     return \@results;
+}
+
+# count_trails_for_anchor($anchor_index) -> \%trails
+# Version eficiente O(log T) que solo cuenta para UNA aparicion.
+# Usa los arrays internos history_appearances + history_trails.
+sub count_trails_for_anchor {
+    my ($self, $anchor_index) = @_;
+    return undef unless defined $anchor_index;
+
+    my $app;
+    for my $a (@{ $self->{history_appearances} }) {
+        if ($a->{index} == $anchor_index) {
+            $app = $a;
+            last;
+        }
+    }
+    return undef unless $app;
+
+    my @trail_indices = sort { $a <=> $b }
+                        map  { $_->{index} }
+                        @{ $self->{history_trails} };
+
+    return {
+        anchor_index => $anchor_index,
+        anchor_price => $app->{price},
+        anchor_dir   => $app->{dir},
+        trails_3m    => _count_in_range($anchor_index, $anchor_index + 3,  \@trail_indices),
+        trails_5m    => _count_in_range($anchor_index, $anchor_index + 5,  \@trail_indices),
+        trails_10m   => _count_in_range($anchor_index, $anchor_index + 10, \@trail_indices),
+        trails_15m   => _count_in_range($anchor_index, $anchor_index + 15, \@trail_indices),
+    };
 }
 
 # -----------------------------------------------------------------------------

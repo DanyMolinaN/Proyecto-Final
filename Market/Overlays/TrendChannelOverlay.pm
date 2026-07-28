@@ -69,8 +69,8 @@ sub draw {
         if ($state eq 'invalidated' && defined $channel->{invalidated_at}) {
             $draw_end_idx = $channel->{invalidated_at};
         }
-        # Si hay pivot2, el canal termina ahi (no proyectar mas alla).
-        if ($sup_p2 && defined $sup_p2->{index}) {
+        # Si hay pivot2 y NO es trendline proyectada, el canal termina ahi.
+        if ($sup_p2 && defined $sup_p2->{index} && !$channel->{project_to_end}) {
             $draw_end_idx = $sup_p2->{index};
         }
         

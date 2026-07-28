@@ -181,7 +181,6 @@ sub _wanted_engines_from_settings {
 
     if ($on->('show_trend_channel')) {
         $need{smc_structure} = 1;
-        $need{orderblock} = 1;
         $need{trend_channel} = 1;
     }
 
@@ -205,6 +204,7 @@ sub _wanted_engines_from_settings {
     $need{dynamic_vwap}      = 1 if $on->('show_dynamic_vwap');
     # ghost_trails usa el mismo engine que dynamic_vwap (ModularEngine):
     $need{dynamic_vwap}      = 1 if $on->('show_ghost_trails');
+    $need{dynamic_vwap}      = 1 if $on->('show_ghost_prediction_panel');
     $need{volume_profile}    = 1 if $on->('show_volume_profile');
     $need{time_persistence}  = 1 if $on->('show_time_persistence');
     $need{supply_demand}     = 1 if $on->('show_supply_demand');

@@ -8,7 +8,7 @@ package Market::Overlays::AnchoredVolumeProfileDavidOverlay;
 #   - $scale->value_in_range() / {min_val}/{max_val} (bug tipografico del
 #     original de David) -> _price_in_range() usando min_value/max_value.
 #   - is_manual_mode()/handle_click($index): el ARMADO/DESARMADO de la
-#     seleccion de click vive en DavidToolbar (flag de un solo uso), no aqui;
+#     seleccion de click vive en ToolsExtra toolbar (flag de un solo uso), no aqui;
 #     este metodo solo aplica el ancla cuando se le llama.
 
 use strict;

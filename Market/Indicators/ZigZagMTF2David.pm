@@ -7,7 +7,7 @@ package Market::Indicators::ZigZagMTF2David;
 # Adaptaciones para Kevin:
 #   - Package renombrado a ZigZagMTF2David.
 #   - Se agrega recompute($md) para IndicatorManager::rebuild_all().
-#   - Se agrega set_resolution($res) para que el DavidToolbar pueda
+#   - Se agrega set_resolution($res) para que el ToolsExtra toolbar pueda
 #     cambiar la temporalidad en vivo.
 #   - Todo lo demas es identico al original de David.
 # =============================================================================
@@ -59,7 +59,7 @@ sub reset {
     $self->{_zigzag}   = [];
 }
 
-# Permite cambiar la temporalidad desde el DavidToolbar.
+# Permite cambiar la temporalidad desde el ToolsExtra toolbar.
 # Tras llamarlo se debe llamar recompute() o request_render() para recalcular.
 sub set_resolution {
     my ( $self, $res ) = @_;

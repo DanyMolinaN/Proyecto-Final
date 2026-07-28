@@ -30,7 +30,7 @@ sub new {
 # register($name, $indicator, %opts)
 # opts:
 #   lazy_tf => 1  — no se recalcula en rebuild_all salvo force=>1
-#                   (herramientas opcionales / David Tools desactivadas)
+#                   (herramientas opcionales / Tools Extra desactivadas)
 sub register {
     my ($self, $name, $indicator, %opts) = @_;
     return unless defined $name && $indicator;

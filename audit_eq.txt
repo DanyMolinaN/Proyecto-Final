@@ -1,5 +1,0 @@
-=== AUDIT PUNTO 2 ===
-SMC 1m total eventos: 0
-SMC 1m EQH/EQL eventos: 0
-
-Detalle 5 primeros eventos:

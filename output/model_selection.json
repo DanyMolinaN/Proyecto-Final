@@ -1,0 +1,22 @@
+{
+   "trails_10m" : {
+      "approach" : "baseline_zero",
+      "test_mae" : 0.114713216957606,
+      "val_mae" : 0.0933333333333333
+   },
+   "trails_15m" : {
+      "approach" : "baseline_zero",
+      "test_mae" : 0.204488778054863,
+      "val_mae" : 0.173333333333333
+   },
+   "trails_3m" : {
+      "approach" : "baseline_zero",
+      "test_mae" : 0.0399002493765586,
+      "val_mae" : 0.0166666666666667
+   },
+   "trails_5m" : {
+      "approach" : "baseline_zero",
+      "test_mae" : 0.0623441396508728,
+      "val_mae" : 0.0366666666666667
+   }
+}

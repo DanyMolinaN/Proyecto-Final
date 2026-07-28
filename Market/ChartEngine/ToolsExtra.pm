@@ -1,0 +1,531 @@
+package Market::ChartEngine::ToolsExtra;
+
+use strict;
+use warnings;
+
+use constant {
+    BG_PANEL   => '#181c27',
+    BG_BTN     => '#1e222d',
+    BG_ACTIVE  => '#2a2e39',
+    FG_NORMAL  => '#d1d4dc',
+    FG_DIM     => '#8892a4',
+    C_ZZVP2    => '#8e44ad',
+    C_ZZMTF2   => '#2ecc71',
+    C_FIB      => '#f39c12',
+    C_LIQ      => '#1abc9c',
+    C_GHOST    => '#ff6f00',
+    C_TF_ON    => '#2979ff',
+    FONT_BTN   => 'Helvetica 9 bold',
+    FONT_TF    => 'Helvetica 8',
+    FONT_LABEL => 'Helvetica 9',
+};
+
+my @TIMEFRAMES = qw(1m 2m 3m 5m 10m 15m 30m 45m 1h 2h 3h 4h);
+
+sub new {
+    my ( $class, %args ) = @_;
+    my $self = {
+        parent          => $args{parent},
+        overlay_manager => $args{overlay_manager},
+        chart_engine    => $args{chart_engine},
+        indicator_refs  => $args{indicator_refs}  || {},
+        overlay_refs    => $args{overlay_refs}    || {},
+        overlay_settings => $args{overlay_settings},
+        replay_controller => $args{replay_controller},
+        _state => {
+            zigzag_vp2_david   => 0,
+            zigzag_mtf2_Dany  => 0,
+            fibonacci_david    => 0,
+            liquidity_david    => 0,
+            smc2_ob_fvg        => 0,
+            show_ghost_prediction_panel => 0,
+        },
+        _current_tf      => '5m',
+        _toolbar_visible => 1,
+        _btns => {},
+        _select_armed => {},
+    };
+    bless $self, $class;
+    return $self;
+}
+
+sub build {
+    my ($self) = @_;
+    my $parent = $self->{parent};
+    return unless $parent;
+
+    my $bg = BG_PANEL;
+    my $fg = FG_NORMAL;
+
+    my $outer = $parent->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -padx => 0, -pady => 0,
+    );
+    $self->{_outer_frame} = $outer;
+
+    my $toggle_btn = $outer->Button(
+        -text             => "\x{25BC} Tools Extra",
+        -background       => BG_ACTIVE,
+        -foreground       => $fg,
+        -activebackground => '#363a45',
+        -font             => FONT_BTN,
+        -relief           => 'flat',
+        -padx             => 8,
+        -pady             => 3,
+        -anchor           => 'w',
+    )->pack( -side => 'top', -fill => 'x', -padx => 0, -pady => 0 );
+    $self->{_toggle_btn} = $toggle_btn;
+
+    my $controls = $outer->Frame( -background => $bg );
+    $controls->pack( -side => 'top', -fill => 'x', -padx => 4, -pady => 2 );
+    $self->{_controls_frame} = $controls;
+
+    $toggle_btn->configure( -command => sub { $self->_toggle_toolbar($toggle_btn, $controls) } );
+
+    # ── Fila 1: ZigZag Ext | ZigZag Int | Selector TF ────────────────────────
+    my $row1 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row1, 'zigzag_vp2_david',  'ZigZag Ext', C_ZZVP2  );
+    $self->_build_toggle_btn( $row1, 'zigzag_mtf2_Dany', 'ZigZag Int', C_ZZMTF2 );
+    $self->_build_tf_selector($row1);
+
+    # ── Fila 2: Fibonacci | Liquidity ─────────────────────────────────────────
+    my $row2 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row2, 'fibonacci_david', 'Fibonacci', C_FIB );
+    $self->_build_toggle_btn( $row2, 'liquidity_david', 'Liquidity', C_LIQ );
+
+    # ── Fila 3: VWAP ────────────────────────────────────────────────────────
+    my $row3 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row3, 'anchored_vwap_david', 'AVWAP', '#2962ff' );
+
+    my $btn_avwap_auto = $row3->Button(
+        -text => 'Auto', -background => BG_BTN, -foreground => '#26a69a',
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+    my $btn_avwap_manual = $row3->Button(
+        -text => 'Manual (clic vela)', -background => BG_BTN, -foreground => FG_DIM,
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+
+    $btn_avwap_auto->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{avwap};
+        $ind->set_mode('auto') if $ind && $ind->can('set_mode');
+        $btn_avwap_auto->configure( -foreground => '#26a69a' );
+        $btn_avwap_manual->configure( -foreground => FG_DIM );
+        $self->{chart_engine}->request_render() if $self->{chart_engine};
+    });
+    $btn_avwap_manual->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{avwap};
+        $ind->set_mode('manual') if $ind && $ind->can('set_mode');
+        $self->{_select_armed}{avwap} = 1;
+        $btn_avwap_auto->configure( -foreground => FG_DIM );
+        $btn_avwap_manual->configure( -foreground => '#ef5350' );
+    });
+
+    for my $band (qw(band1 band2 band3)) {
+        my $label = 'D' . substr($band, -1);
+        $row3->Button(
+            -text => $label, -background => BG_BTN, -foreground => FG_DIM,
+            -font => FONT_TF, -relief => 'flat', -padx => 4, -pady => 2,
+            -command => sub {
+                my $ov = $self->{overlay_refs}{avwap};
+                $ov->set_flag("show_$band", !$ov->{"show_$band"}) if $ov;
+                $self->{chart_engine}->request_render() if $self->{chart_engine};
+            },
+        )->pack( -side => 'left', -padx => 1 );
+    }
+
+    # ── Fila 4: AVP y Pivotes ───────────────────────────────────────────────
+    my $row4 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row4, 'pivot_anchors_david', 'Pivotes', '#ffd700' );
+    $self->_build_toggle_btn( $row4, 'anchored_vp_david', 'AVP', '#ffd700' );
+
+    $row4->Label( -text => 'Filas:', -background => $bg, -foreground => FG_DIM, -font => FONT_TF )
+        ->pack( -side => 'left', -padx => 4 );
+    my $avp_scale = $row4->Scale(
+        -from => 10, -to => 100, -resolution => 1, -orient => 'horizontal',
+        -length => 90, -showvalue => 1, -font => FONT_TF,
+        -command => sub {
+            my ($val) = @_;
+            my $ind = $self->{indicator_refs}{anchored_vp};
+            $ind->set_row_count($val + 0) if $ind;
+            $self->{chart_engine}->request_render() if $self->{chart_engine};
+        },
+    )->pack( -side => 'left', -padx => 2 );
+    $avp_scale->set( $self->{indicator_refs}{anchored_vp}{row_count} // 24 );
+
+    my $btn_avp_auto = $row4->Button(
+        -text => 'Auto', -background => BG_BTN, -foreground => '#26a69a',
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+    my $btn_avp_manual = $row4->Button(
+        -text => 'Manual (clic vela)', -background => BG_BTN, -foreground => FG_DIM,
+        -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+    )->pack( -side => 'left', -padx => 2 );
+
+    $btn_avp_auto->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{anchored_vp};
+        $ind->set_mode('auto') if $ind;
+        $self->{_select_armed}{anchored_vp} = 0;
+        $btn_avp_auto->configure( -foreground => '#26a69a' );
+        $btn_avp_manual->configure( -foreground => FG_DIM );
+        $self->{chart_engine}->request_render() if $self->{chart_engine};
+    });
+    $btn_avp_manual->configure( -command => sub {
+        my $ind = $self->{indicator_refs}{anchored_vp};
+        $ind->set_mode('manual') if $ind;
+        $self->{_select_armed}{anchored_vp} = 1;
+        $btn_avp_auto->configure( -foreground => FG_DIM );
+        $btn_avp_manual->configure( -foreground => '#ef5350' );
+    });
+
+    # ── Fila 5: SMC Structures 2 ──────────────────────────────────────────────
+    my $row5 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row5, 'smc2_ob_fvg', 'FVG', '#26a69a' );
+    for my $pair ( ['ob_swing' => 'OB Swing'], ['ob_internal' => 'OB Internal'] ) {
+        my ( $flag, $label ) = @$pair;
+        $row5->Button(
+            -text => $label, -background => BG_BTN, -foreground => FG_DIM,
+            -font => FONT_TF, -relief => 'flat', -padx => 6, -pady => 2,
+            -command => sub {
+                my $ov = $self->{overlay_refs}{smc2};
+                $ov->set_flag("show_$flag", !$ov->{"show_$flag"}) if $ov;
+                $self->{chart_engine}->request_render() if $self->{chart_engine};
+            },
+        )->pack( -side => 'left', -padx => 2 );
+    }
+
+    # ── Fila 6: Ghost Trail Prediction ────────────────────────────────────────
+    my $row6 = $controls->Frame( -background => $bg )->pack(
+        -side => 'top', -fill => 'x', -pady => 2,
+    );
+    $self->_build_toggle_btn( $row6, 'show_ghost_prediction_panel', 'GhostPred', C_GHOST );
+
+    return $self;
+}
+
+sub _build_toggle_btn {
+    my ( $self, $parent_frame, $key, $label, $color ) = @_;
+    my $bg = BG_PANEL;
+
+    my $btn = $parent_frame->Button(
+        -text             => "\x{25CF} $label",
+        -background       => BG_BTN,
+        -foreground       => FG_DIM,
+        -activebackground => BG_ACTIVE,
+        -font             => FONT_BTN,
+        -relief           => 'flat',
+        -padx             => 8,
+        -pady             => 4,
+        -width            => 12,
+    )->pack( -side => 'left', -padx => 3, -pady => 1 );
+
+    $self->{_btns}{$key} = { widget => $btn, color => $color, label => $label };
+
+    $btn->configure( -command => sub {
+        $self->_toggle_overlay($key, $btn, $color, $label);
+    });
+    return $btn;
+}
+
+sub _build_tf_selector {
+    my ( $self, $parent_frame ) = @_;
+    my $bg = BG_PANEL;
+
+    my $tf_outer = $parent_frame->Frame( -background => $bg )->pack(
+        -side => 'left', -padx => 6,
+    );
+
+    $parent_frame->Label(
+        -text       => 'TF:',
+        -background => $bg,
+        -foreground => FG_DIM,
+        -font       => FONT_LABEL,
+    )->pack( -in => $tf_outer, -side => 'left' );
+
+    my $tf_grid = $tf_outer->Frame( -background => $bg )->pack(
+        -side => 'left',
+    );
+
+    my $tf_row1 = $tf_grid->Frame( -background => $bg )->pack( -side => 'top' );
+    my $tf_row2 = $tf_grid->Frame( -background => $bg )->pack( -side => 'top' );
+
+    $self->{_tf_btns} = {};
+    my $idx = 0;
+    for my $tf (@TIMEFRAMES) {
+        my $row = $idx < 6 ? $tf_row1 : $tf_row2;
+        my $is_active = ( $tf eq $self->{_current_tf} );
+
+        my $b = $row->Button(
+            -text             => $tf,
+            -background       => $is_active ? C_TF_ON : BG_BTN,
+            -foreground       => $is_active ? '#ffffff' : FG_DIM,
+            -activebackground => BG_ACTIVE,
+            -font             => FONT_TF,
+            -relief           => 'flat',
+            -padx             => 3,
+            -pady             => 2,
+            -width            => 4,
+        )->pack( -side => 'left', -padx => 1, -pady => 1 );
+
+        my $tf_copy = $tf;
+        $b->configure( -command => sub { $self->_select_tf($tf_copy) } );
+        $self->{_tf_btns}{$tf} = $b;
+        $idx++;
+    }
+}
+
+sub _toggle_toolbar {
+    my ( $self, $toggle_btn, $controls ) = @_;
+    if ( $self->{_toolbar_visible} ) {
+        $controls->packForget();
+        $toggle_btn->configure( -text => "\x{25B2} Tools Extra" );
+    }
+    else {
+        $controls->pack( -side => 'top', -fill => 'x', -padx => 4, -pady => 2 );
+        $toggle_btn->configure( -text => "\x{25BC} Tools Extra" );
+    }
+    $self->{_toolbar_visible} = !$self->{_toolbar_visible};
+}
+
+sub _toggle_overlay {
+    my ( $self, $key, $btn, $color, $label ) = @_;
+    my $om = $self->{overlay_manager};
+    my $ce = $self->{chart_engine};
+    return unless $om && $ce;
+
+    # Ghost Prediction: usar OverlaySettings toggle en vez de overlay directo
+    if ( $key eq 'show_ghost_prediction_panel' ) {
+        $self->{_state}{$key} = !$self->{_state}{$key};
+        my $on = $self->{_state}{$key};
+        if ( my $os = $self->{overlay_settings} ) {
+            $os->set($key, $on ? 1 : 0);
+            $os->save() if $os->can('save');
+        }
+        if ($ce->can('set_overlay_option')) {
+            $ce->set_overlay_option($key, $on ? 1 : 0);
+        } else {
+            $ce->rebuild_analysis_cache() if $ce->can('rebuild_analysis_cache');
+            $ce->request_render();
+        }
+        $btn->configure(
+            -background => $on ? $color   : BG_BTN,
+            -foreground => $on ? '#ffffff' : FG_DIM,
+        );
+        return;
+    }
+
+    $self->{_state}{$key} = !$self->{_state}{$key};
+    my $on = $self->{_state}{$key};
+
+    if ($on) {
+        $om->enable($key);
+    }
+    else {
+        $om->disable($key);
+    }
+
+    if ( $key eq 'fibonacci_david' ) {
+        my $fib = $self->{indicator_refs}{fibonacci};
+        if ( $fib && $fib->can('set_mode') ) {
+            $fib->set_mode( $on ? 'manual' : 'off' );
+            $fib->clear_manual_anchor if !$on && $fib->can('clear_manual_anchor');
+        }
+    }
+
+    if ($on) {
+        my $ind_key = {
+            zigzag_vp2_david  => 'zigzag_vp2',
+            zigzag_mtf2_Dany => 'zigzag_mtf2',
+            liquidity_david   => 'liquidity',
+            fibonacci_david   => 'fibonacci',
+            anchored_vwap_david => 'avwap',
+            pivot_anchors_david => 'pivot_anchors',
+            anchored_vp_david   => 'anchored_vp',
+            smc2_ob_fvg         => 'smc2',
+        }->{$key};
+        my $ind = $ind_key ? $self->{indicator_refs}{$ind_key} : undef;
+        my $md  = $ce->{market_data};
+        if ( $ind && $md ) {
+            my $im = $ce->{indicator_manager};
+            my $reg_name = {
+                zigzag_vp2  => 'zigzag_vp2_david',
+                zigzag_mtf2 => 'zigzag_mtf2_Dany',
+                liquidity   => 'liquidity_david',
+                fibonacci   => 'fibonacci_david',
+                avwap       => 'anchored_vwap_david',
+                pivot_anchors => 'pivot_anchors_david',
+                anchored_vp   => 'anchored_vp_david',
+                smc2          => 'smc2',
+            }->{$ind_key};
+
+            my $needs = $self->_tools_indicator_needs_recompute($ind, $md, $reg_name);
+            if ($needs) {
+                if ( $im && $reg_name && $im->can('rebuild_one') ) {
+                    if ( $reg_name eq 'liquidity_david' ) {
+                        for my $dep (qw(zigzag_vp2_david zigzag_mtf2_Dany)) {
+                            my $dep_ind = $im->get($dep);
+                            if ($self->_tools_indicator_needs_recompute($dep_ind, $md, $dep)) {
+                                $im->rebuild_one($dep, $md);
+                            }
+                        }
+                    }
+                    $ind->reset() if $ind->can('reset');
+                    $ind->recompute($md, $self->{_pending_limit}{$reg_name});
+                }
+                elsif ( $ind->can('recompute') ) {
+                    $ind->recompute($md);
+                }
+            }
+        }
+    }
+
+    $btn->configure(
+        -background => $on ? $color   : BG_BTN,
+        -foreground => $on ? '#ffffff' : FG_DIM,
+    );
+
+    if ( my $os = $self->{overlay_settings} ) {
+        $os->set( "show_$key", $on ? 1 : 0 );
+        $os->save() if $os->can('save');
+    }
+
+    $ce->request_render();
+}
+
+sub _select_tf {
+    my ( $self, $tf ) = @_;
+    return if $tf eq $self->{_current_tf};
+
+    if ( my $old_btn = $self->{_tf_btns}{ $self->{_current_tf} } ) {
+        $old_btn->configure( -background => BG_BTN, -foreground => FG_DIM );
+    }
+    if ( my $new_btn = $self->{_tf_btns}{$tf} ) {
+        $new_btn->configure( -background => C_TF_ON, -foreground => '#ffffff' );
+    }
+    $self->{_current_tf} = $tf;
+
+    my $ind = $self->{indicator_refs}{zigzag_mtf2};
+    my $ce  = $self->{chart_engine};
+
+    if ( $ind && $ind->can('set_resolution') ) {
+        $ind->set_resolution($tf);
+        if ( $ce && $ce->{market_data} && $ind->can('recompute') ) {
+            $ind->recompute( $ce->{market_data} );
+        }
+    }
+    elsif ( $ind && $ind->can('set_timeframe') ) {
+        $ind->set_timeframe($tf);
+    }
+
+    if ( $self->{_state}{zigzag_mtf2_Dany} && $ce ) {
+        $ce->request_render();
+    }
+}
+
+sub _tools_indicator_needs_recompute {
+    my ( $self, $ind, $md, $reg_name ) = @_;
+    return 1 unless $ind && $md;
+
+    my $total = $md->can('size') ? ($md->size // 0) : 0;
+    return 1 if $total <= 0;
+
+    my $size = $total;
+    my $rc = $self->{replay_controller};
+    if ( $rc && $rc->can('visible_limit') ) {
+        my $vl = $rc->visible_limit($total);
+        $size = $vl if defined $vl && $vl >= 0 && $vl < $total;
+    }
+
+    my $tf = '';
+    if ($reg_name && $reg_name eq 'zigzag_mtf2_Dany' && $ind->can('get_resolution')) {
+        $tf = $ind->get_resolution() // '';
+    }
+    elsif ($md->can('active_tf')) {
+        $tf = $md->active_tf() // '';
+    }
+    my $want = "$tf|$size";
+
+    my $fp = $ind->{_kevin_computed_fp};
+    return 0 if defined $fp && $fp eq $want;
+
+    $ind->{_kevin_computed_fp} = $want;
+    $self->{_pending_limit}{$reg_name} = $size;
+    return 1;
+}
+
+sub overlay_ref {
+    my ( $self, $key ) = @_;
+    return $self->{overlay_refs}{$key};
+}
+
+sub is_fibonacci_manual_mode {
+    my ($self) = @_;
+    my $fib_ov = $self->{overlay_refs}{fibonacci};
+    return 0 unless $fib_ov && $fib_ov->can('is_manual_mode');
+    return $fib_ov->is_manual_mode();
+}
+
+sub handle_fibonacci_click {
+    my ( $self, $index ) = @_;
+    my $fib_ov = $self->{overlay_refs}{fibonacci};
+    return unless $fib_ov && $fib_ov->can('handle_click');
+    $fib_ov->handle_click($index);
+    $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub is_avwap_manual_mode {
+    my ($self) = @_;
+    return $self->{_select_armed}{avwap} ? 1 : 0;
+}
+
+sub handle_avwap_click {
+    my ( $self, $index ) = @_;
+    my $ov = $self->{overlay_refs}{avwap};
+    return unless $ov && $ov->can('handle_click');
+    $ov->handle_click($index);
+    $self->{_select_armed}{avwap} = 0;
+    $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub is_anchored_vp_manual_mode {
+    my ($self) = @_;
+    return $self->{_select_armed}{anchored_vp} ? 1 : 0;
+}
+
+sub handle_anchored_vp_click {
+    my ( $self, $index ) = @_;
+    my $ov = $self->{overlay_refs}{anchored_vp};
+    return unless $ov && $ov->can('handle_click');
+    $ov->handle_click($index);
+    $self->{_select_armed}{anchored_vp} = 0;
+    $self->{chart_engine}->request_render() if $self->{chart_engine};
+}
+
+sub recompute_if_needed {
+    my ( $self, $md ) = @_;
+    return unless $md;
+
+    my $rc = $self->{replay_controller};
+    return unless $rc && $rc->can('is_active') && $rc->is_active;
+
+    my $im = $self->{chart_engine} && $self->{chart_engine}->{indicator_manager};
+    return unless $im;
+
+    my $ind = $im->get('zigzag_vp2_david');
+    return unless $ind;
+    if ( $self->_tools_indicator_needs_recompute( $ind, $md, 'zigzag_vp2_david' ) ) {
+        $ind->reset() if $ind->can('reset');
+        $ind->recompute( $md, $self->{_pending_limit}{zigzag_vp2_david} );
+    }
+}
+
+1;

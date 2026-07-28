@@ -59,7 +59,11 @@ use Market::Overlays::PremiumDiscountOverlay;
 use Market::Overlays::MTFLevelsOverlay;
 use Market::Overlays::ZZMTFOverlay;
 
-# --- David Tools Integration ---
+# Fase 6 — Demo: prediccion Ridge en vivo
+use Market::Concepts::DSVWAP::GhostTrailPredictor;
+use Market::Panels::GhostTrailPredictionPanel;
+
+# --- Tools Extra ---
 use Market::Indicators::ZigZagVP2David;
 use Market::Indicators::ZigZagMTF2David;
 use Market::Indicators::FibonacciDavid;
@@ -68,7 +72,7 @@ use Market::Overlays::ZigZagVP2DavidOverlay;
 use Market::Overlays::ZigZagMTF2DavidOverlay;
 use Market::Overlays::FibonacciDavidOverlay;
 use Market::Overlays::LiquidityDavidOverlay;
-use Market::ChartEngine::DavidToolbar;
+use Market::ChartEngine::ToolsExtra;
 
 use Market::Indicators::AnchoredVWAPDavid;
 use Market::Overlays::AnchoredVWAPDavidOverlay;
@@ -201,7 +205,7 @@ sub new {
         settings => $overlay_settings,
     );
 
-    # --- David Tools Integration: indicadores y overlays (Fase 4) ---
+    # --- Tools Extra: indicadores y overlays (Fase 4) ---
     # Orden critico por cross-dependencies (plan seccion 4.4b):
     # 1. ZigZagVP2David (sin dependencias)
     # 2. ZigZagMTF2David (sin dependencias)
@@ -212,7 +216,7 @@ sub new {
     );
     my $zzmtf2d_ind = Market::Indicators::ZigZagMTF2David->new(
         market_data => $market_data,
-        resolution  => '5m',   # default; cambiable via DavidToolbar
+        resolution  => '5m',   # default; cambiable via ToolsExtra
     );
     my $fibd_ind = Market::Indicators::FibonacciDavid->new(
         market_data  => $market_data,
@@ -296,12 +300,12 @@ sub new {
         mtf_levels_overlay        => $mtf_levels_overlay,
         zzmtf_overlay             => $zzmtf_overlay,
 
-        # David Tools overlays
+        # Tools Extra overlays
         zzvp2d_overlay   => $zzvp2d_ov,
         zzmtf2d_overlay  => $zzmtf2d_ov,
         fibd_overlay     => $fibd_ov,
         liqd_overlay     => $liqd_ov,
-        # David Tools indicators (referencias para DavidToolbar)
+        # Tools Extra indicators (referencias para ToolsExtra toolbar)
         zzvp2d_ind       => $zzvp2d_ind,
         zzmtf2d_ind      => $zzmtf2d_ind,
         fibd_ind         => $fibd_ind,
@@ -353,6 +357,29 @@ sub new {
     $self->{overlay_manager}->initialize() if $self->{overlay_manager} && $self->{overlay_manager}->can('initialize');
     $self->{replay_controller}->initialize() if $self->{replay_controller} && $self->{replay_controller}->can('initialize');
 
+    # Fase 6 — GhostTrailPredictor + panel de demo
+    {
+        my $bin = dirname(File::Spec->rel2abs($0));
+        my $out_dir = File::Spec->catdir($bin, 'output');
+        my $models_path  = File::Spec->catfile($out_dir, 'models.json');
+        my $norm_path    = File::Spec->catfile($out_dir, 'normalization_params.json');
+        my $predictor;
+        if (-f $models_path && -f $norm_path) {
+            $predictor = Market::Concepts::DSVWAP::GhostTrailPredictor->new(
+                models_path      => $models_path,
+                norm_params_path => $norm_path,
+                pip_factor       => 4,
+            );
+            $predictor->precompute_indicators($market_data);
+        }
+        $self->{ghost_predictor} = $predictor;
+        $self->{ghost_prediction_panel} = Market::Panels::GhostTrailPredictionPanel->new(
+            predictor        => $predictor,
+            market_data      => $market_data,
+            overlay_settings => $overlay_settings,
+        );
+    }
+
     $self->{indicator_manager}->register('anchored_vwap_david', $avwapd_ind, lazy_tf => 1);
     $self->{indicator_manager}->register('pivot_anchors_david', $pivotd_ind, lazy_tf => 1);
     $self->{indicator_manager}->register('anchored_vp_david', $avpd_ind, lazy_tf => 1);
@@ -367,22 +394,22 @@ sub new {
     }
     $self->{candle_width} = $candle_width;
 
-    # --- David Tools: registrar indicadores en indicator_manager (si existe) ---
-    # lazy_tf: no se recalculan en cada cambio de temporalidad del chart
+    # --- Tools Extra: registrar indicadores en indicator_manager (si existe) ---
+    # lazy_tf: no se recalcula en cada cambio de temporalidad del chart
     # (cuesta ~5s). Se recomputan on-demand al activar el boton del toolbar
     # o si el overlay ya esta activo al cambiar de TF.
     if ( $self->{indicator_manager} && $self->{indicator_manager}->can('register') ) {
         $self->{indicator_manager}->register('zigzag_vp2_david',  $zzvp2d_ind, lazy_tf => 1);
-        $self->{indicator_manager}->register('zigzag_mtf2_david', $zzmtf2d_ind, lazy_tf => 1);
+        $self->{indicator_manager}->register('zigzag_mtf2_Dany', $zzmtf2d_ind, lazy_tf => 1);
         $self->{indicator_manager}->register('fibonacci_david',    $fibd_ind, lazy_tf => 1);
         $self->{indicator_manager}->register('liquidity_david',    $liqd_ind, lazy_tf => 1);
     }
 
-    # --- David Tools: crear el toolbar (requiere que el parent widget exista) ---
+    # --- Tools Extra: crear el toolbar (requiere que el parent widget exista) ---
     # El parent se pasa como arg desde market.pl; si no se pasa, el toolbar
     # no se construye (el resto del sistema funciona sin el).
-    if ( my $toolbar_parent = $args{david_toolbar_parent} ) {
-        $self->{david_toolbar} = Market::ChartEngine::DavidToolbar->new(
+    if ( my $toolbar_parent = $args{tools_extra_parent} ) {
+        $self->{david_toolbar} = Market::ChartEngine::ToolsExtra->new(
             parent            => $toolbar_parent,
             overlay_manager   => $self->{overlay_manager},
             chart_engine      => $self,
