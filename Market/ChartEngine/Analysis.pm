@@ -119,6 +119,7 @@ sub rebuild_analysis_cache {
         time_persistence  => $raw_cache->{time_persistence},
         anchored_vwap     => $raw_cache->{anchored_vwap},
         dynamic_vwap      => $raw_cache->{dynamic_vwap},
+        ghost_trails      => $raw_cache->{dynamic_vwap}, # mismo DTO que dynamic_vwap (ModularEngine)
         fibonacci         => $raw_cache->{fibonacci},
         supply_demand     => $raw_cache->{supply_demand},
         trend_channel     => $raw_cache->{trend_channel},
@@ -202,6 +203,8 @@ sub _wanted_engines_from_settings {
 
     $need{anchored_vwap}     = 1 if $on->('show_anchored_vwap');
     $need{dynamic_vwap}      = 1 if $on->('show_dynamic_vwap');
+    # ghost_trails usa el mismo engine que dynamic_vwap (ModularEngine):
+    $need{dynamic_vwap}      = 1 if $on->('show_ghost_trails');
     $need{volume_profile}    = 1 if $on->('show_volume_profile');
     $need{time_persistence}  = 1 if $on->('show_time_persistence');
     $need{supply_demand}     = 1 if $on->('show_supply_demand');
@@ -361,6 +364,7 @@ sub _prepare_overlay_data {
         time_persistence => $time_persistence_data,
         anchored_vwap  => $anchored_vwap_data,
         dynamic_vwap   => $dynamic_vwap_data,
+        ghost_trails   => $dynamic_vwap_data, # mismo DTO; GhostTrailOverlay accede a ->{ghost_trails}
         fibonacci      => $fibonacci_data,
         supply_demand  => $supply_demand_data,
         trend_channel  => $trend_channel_data,

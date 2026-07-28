@@ -100,31 +100,22 @@ sub _on_anchor_changed {
 # =============================================================================
 # _on_tick($event)
 #
-# TRANSCRIPCION DIRECTA del bloque barstate.islast del original.
+# TRANSCRIPCION DIRECTA de los bloques barstate.isconfirmed y barstate.islast.
 # Orden de ejecucion IDENTICO al original (REGLA 2).
-#
-# El original ejecuta este bloque UNA VEZ en la ultima barra viva.
-# Esta implementacion lo ejecuta en cada NewBarEvent para mantener
-# el ghost actualizado en la arquitectura event-driven. El resultado
-# matematico para la barra actual (la "ultima" en cada momento) es
-# identico al que produce el original en barstate.islast.
 # =============================================================================
 sub _on_tick {
     my ($self, $event) = @_;
 
-    return unless $event->{is_last};
-
-    # Guardia show_miss: el bloque barstate.islast del original esta
-    # enteramente dentro de if ($show_miss) { ... }
+    # Guardia show_miss: ambos bloques (isconfirmed e islast) del original
+    # estan dentro de if ($show_miss) { ... }
     return unless $self->{show_miss};
 
     my $index       = $event->{index};
     my $market_data = $event->{bar};
+    my $is_last     = $event->{is_last};
 
     # -------------------------------------------------------------------------
     # Paso 1: Leer px1, py1, os
-    # Original: variables "var" globales persistentes $px1, $py1, $os
-    # Aqui:     provienen del confirmed_anchor (emitido por AnchorResolver)
     # -------------------------------------------------------------------------
     my $anchor = $self->{confirmed_anchor};
     return unless $anchor;
@@ -132,78 +123,48 @@ sub _on_tick {
     my $px1 = $anchor->{x};
     my $py1 = $anchor->{y};
 
-    # Derivacion de os desde dir:
-    #   dir == -1  => el ultimo pivot fue un High  => os = 1 (buscamos minimos)
-    #   dir ==  1  => el ultimo pivot fue un Low   => os = 0 (buscamos maximos)
-    # Identico al comportamiento de $os en el original.
+    # dir == -1 => pivot fue High => os = 1 (buscamos minimos)
+    # dir ==  1 => pivot fue Low  => os = 0 (buscamos maximos)
     my $os = $anchor->{dir} == -1 ? 1 : 0;
 
-    # Guardia de tramo minimo: si no existe al menos una barra despues del ancla,
-    # el bucle del original seria: for (i=0; i<=b-px1-1; i++) con b-px1-1 < 0,
-    # lo que no ejecutaria ninguna iteracion. Retornamos directamente.
+    # Sin al menos una barra post-ancla, el bucle no tiene iteraciones.
     return if $index - $px1 <= 0;
 
     # -------------------------------------------------------------------------
     # Paso 2: Buscar x_last y y_last
-    # Original:
-    #   my @prices; my @prices_x;
-    #   for (my $i = 0; $i <= $b - $px1 - 1; $i++) {
-    #       my $val = $os == 1
-    #           ? series_at($bars, $b, 'low',  $i)
-    #           : series_at($bars, $b, 'high', $i);
-    #       next unless defined $val;
-    #       push @prices, $val; push @prices_x, $b - $i;
-    #   }
-    #   if ($os == 1) {
-    #       $y_last = min(@prices);
-    #       my ($idx) = grep { $prices[$_] == $y_last } 0 .. $#prices;
-    #       $x_last = $prices_x[$idx];
-    #   } else { ... max ... }
     # -------------------------------------------------------------------------
     my ($x_last, $y_last) = $self->_find_extreme($index, $market_data, $px1, $os);
-
-    # Si el tramo no produjo ningun valor valido, no publicamos nada.
-    # Equivale al if (scalar(@prices) > 0) del original.
     return unless defined $y_last;
 
-    # -------------------------------------------------------------------------
-    # Paso 3 & 4: Preparar ghost_line y ghost_label
-    # Original:
-    #   draw_line(x1=>$px1, y1=>$py1, x2=>$x_last, y2=>$y_last, color=>..., style=>'dashed')
-    #   draw_label(x=>$x_last, y=>$y_last, text=>'ghost', color=>..., style=>...)
-    #
-    # ghost_dir: os==1 => linea baja (hacia minimo) => dir=1
-    #             os==0 => linea sube (hacia maximo) => dir=-1
-    # Identico a: $os == 1 ? $miss_ph_css : $miss_pl_css en el original
-    # (el color depende de la direccion del movimiento esperado).
-    # -------------------------------------------------------------------------
     my $ghost_dir = $os == 1 ? 1 : -1;
 
     # -------------------------------------------------------------------------
-    # Paso 5: Reiniciar acumuladores Ghost VWAP
-    # Original:
-    #   my $ghost_cumVol = 0.0;
-    #   my $ghost_cumPriceVol = 0.0;
-    #   my $ghost_sumSqDiff = 0.0;
-    # En el original estas son variables LOCALES al bloque barstate.islast,
-    # lo que equivale a un reinicio total en cada ejecucion.
-    # En _compute_ghost_vwap() se declaran como variables locales identicamente.
+    # BLOQUE barstate.isconfirmed (Ghost Trail)
+    # En esta arquitectura, toda barra via NewBarEvent ya está confirmada.
+    # Original Pine: if barstate.isconfirmed -> label.new(x_last, y_last, '1')
+    # Emitimos GhostTrailEvent solo cuando x_last == index, es decir cuando
+    # la barra que acaba de cerrar ES la que establecio el nuevo extremo.
     # -------------------------------------------------------------------------
+    if (defined $x_last && $x_last == $index) {
+        $self->{bus}->dispatch(
+            Market::Concepts::DSVWAP::Event->ghost_trail_event(
+                $index,
+                $market_data->get_timestamp($index),
+                $x_last,
+                $y_last,
+                $ghost_dir,
+                $px1
+            )
+        );
+    }
 
     # -------------------------------------------------------------------------
-    # Paso 6: Calcular Ghost VWAP y todas las Bandas
-    # Original:
-    #   my $ghost_barsback = $b - $x_last;
-    #   for (my $i = $ghost_barsback; $i >= 0; $i--) { ... }
+    # Bloque: barstate.islast (Ghost Drawing)
     # -------------------------------------------------------------------------
-    my $ghost_data = $self->_compute_ghost_vwap($x_last, $index, $market_data, $ghost_dir);
-
-    # -------------------------------------------------------------------------
-    # Paso 7: Publicar snapshot al StateCache
-    # Original: draw_polyline(points=>$ghostVwapData->{points}, ...)
-    #           generate_band_polylines($ghostBandsData)
-    # -------------------------------------------------------------------------
-    $self->_publish_snapshot($px1, $py1, $x_last, $y_last, $ghost_dir, $ghost_data);
+    if ($is_last) {
+        my $ghost_data = $self->_compute_ghost_vwap($x_last, $index, $market_data, $ghost_dir);
+        $self->_publish_snapshot($px1, $py1, $x_last, $y_last, $ghost_dir, $ghost_data);
+    }
 }
 
 
